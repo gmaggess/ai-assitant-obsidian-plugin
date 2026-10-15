@@ -1,0 +1,9 @@
+{
+  "id": "scoped-ai-chat",
+  "name": "Scoped AI Chat",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Chat with Claude or ChatGPT about the current file, folder, or entire vault.",
+  "author": "George Maggessy",
+  "isDesktopOnly": false
+}
