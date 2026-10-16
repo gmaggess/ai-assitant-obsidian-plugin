@@ -2,6 +2,9 @@
 
 Chat with Claude or ChatGPT about your notes, limited to the current **file**, **folder**, or **whole vault**.
 
+## Requirements and costs
+You need your own Anthropic or OpenAI account and API key. Requests use the selected provider's API and may incur charges under that provider's pricing.
+
 ## Privacy and data
 - Your API keys are stored in the plugin's `data.json` inside your vault. Don't sync that file publicly.
 - When you send a message, the notes in the selected scope (file, folder or vault) are sent to the provider you chose (Anthropic or OpenAI). Nothing else leaves your vault, and there is no telemetry.
