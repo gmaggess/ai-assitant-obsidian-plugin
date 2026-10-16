@@ -46,8 +46,6 @@ export class ChatView extends ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("sac-view");
-    const s = this.plugin.settings;
-
     const bar = root.createDiv("sac-toolbar");
     const actions = bar.createDiv("sac-actions");
     const action = (icon: string, label: string) => {
@@ -78,8 +76,8 @@ export class ChatView extends ItemView {
       input.value = "";
       await this.ask(text, send);
     };
-    send.onclick = () => { if (this.busy) this.cancel?.(); else submit(); };
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
+    send.onclick = () => { if (this.busy) this.cancel?.(); else void submit(); };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void submit(); } });
   }
 
   async loadConversation(id: string) {

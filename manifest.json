@@ -1,8 +1,8 @@
 {
   "id": "ai-writer-assistant",
   "name": "AI-Writer Assistant",
-  "version": "1.0.0",
-  "minAppVersion": "1.4.0",
+  "version": "1.0.1",
+  "minAppVersion": "1.7.2",
   "description": "Chat with Claude or ChatGPT about your current note, folder or vault, and let it draft and edit notes with your approval.",
   "author": "George Maggessy",
   "isDesktopOnly": false,

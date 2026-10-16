@@ -81,7 +81,7 @@ export class SearchModal extends Modal {
       } finally { btn.disabled = false; }
     };
     btn.onclick = run;
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") void run(); });
     input.focus();
   }
   onClose() { this.comp.unload(); this.contentEl.empty(); }

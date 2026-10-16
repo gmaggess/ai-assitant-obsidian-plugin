@@ -25,14 +25,14 @@ export default class AIWriterAssistantPlugin extends Plugin {
     const leaf = existing ?? this.app.workspace.getRightLeaf(false);
     if (!leaf) return;
     if (!existing) await leaf.setViewState({ type: VIEW_TYPE, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
 
   async openConversation(id: string) {
     await this.activateView();
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
     const view = leaf?.view;
-    if (view instanceof ChatView) view.loadConversation(id);
+    if (view instanceof ChatView) await view.loadConversation(id);
   }
 
   async saveSettings() { await this.saveData(this.settings); }

@@ -53,7 +53,7 @@ export function checkPath(path: unknown, configDir: string): string | null {
   if (path.startsWith("/") || /^[a-zA-Z]:/.test(path)) return "path must be vault-relative.";
   const parts = path.split(/[\\/]/);
   if (parts.includes("..")) return "path must not contain '..'.";
-  if (parts[0] === configDir || parts[0] === ".obsidian") return "the vault configuration folder is off limits.";
+  if (parts[0] === configDir) return "the vault configuration folder is off limits.";
   return null;
 }
 

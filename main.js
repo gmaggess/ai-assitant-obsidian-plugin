@@ -353,7 +353,7 @@ var SearchModal = class extends import_obsidian2.Modal {
     };
     btn.onclick = run;
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") run();
+      if (e.key === "Enter") void run();
     });
     input.focus();
   }
@@ -477,14 +477,14 @@ function checkPath(path, configDir) {
   if (path.startsWith("/") || /^[a-zA-Z]:/.test(path)) return "path must be vault-relative.";
   const parts = path.split(/[\\/]/);
   if (parts.includes("..")) return "path must not contain '..'.";
-  if (parts[0] === configDir || parts[0] === ".obsidian") return "the vault configuration folder is off limits.";
+  if (parts[0] === configDir) return "the vault configuration folder is off limits.";
   return null;
 }
 var VaultTools = class {
-  constructor(app, mode, confirm2) {
+  constructor(app, mode, confirm) {
     this.app = app;
     this.mode = mode;
-    this.confirm = confirm2;
+    this.confirm = confirm;
     this.defs = TOOL_DEFS;
     this.modified = /* @__PURE__ */ new Set();
   }
@@ -589,7 +589,6 @@ var ChatView = class extends import_obsidian5.ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("sac-view");
-    const s = this.plugin.settings;
     const bar = root.createDiv("sac-toolbar");
     const actions = bar.createDiv("sac-actions");
     const action = (icon, label) => {
@@ -623,12 +622,12 @@ var ChatView = class extends import_obsidian5.ItemView {
     };
     send.onclick = () => {
       if (this.busy) this.cancel?.();
-      else submit();
+      else void submit();
     };
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        submit();
+        void submit();
       }
     });
   }
@@ -814,7 +813,7 @@ var SettingsTab = class extends import_obsidian6.PluginSettingTab {
     const s = this.plugin.settings;
     const save = () => this.plugin.saveSettings();
     containerEl.empty();
-    containerEl.createEl("h3", { text: "API keys" });
+    new import_obsidian6.Setting(containerEl).setName("API keys").setHeading();
     new import_obsidian6.Setting(containerEl).setName("Anthropic API key").setDesc("console.anthropic.com \u2192 API keys").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.anthropicApiKey).onChange(async (v) => {
@@ -829,7 +828,7 @@ var SettingsTab = class extends import_obsidian6.PluginSettingTab {
         await save();
       });
     });
-    containerEl.createEl("h3", { text: "Model" });
+    new import_obsidian6.Setting(containerEl).setName("Model").setHeading();
     new import_obsidian6.Setting(containerEl).setName("Provider").addDropdown((d) => d.addOptions({ anthropic: "Claude", openai: "ChatGPT" }).setValue(s.provider).onChange(async (v) => {
       s.provider = v;
       await save();
@@ -878,7 +877,7 @@ var SettingsTab = class extends import_obsidian6.PluginSettingTab {
         await save();
       }
     }));
-    containerEl.createEl("h3", { text: "Scope" });
+    new import_obsidian6.Setting(containerEl).setName("Scope").setHeading();
     new import_obsidian6.Setting(containerEl).setName("Default scope").setDesc("Can be changed per chat in the chat panel.").addDropdown((d) => d.addOptions({ file: "Current file", folder: "Current folder", vault: "Whole vault" }).setValue(s.defaultScope).onChange(async (v) => {
       s.defaultScope = v;
       await save();
@@ -894,7 +893,7 @@ var SettingsTab = class extends import_obsidian6.PluginSettingTab {
         await save();
       }
     }));
-    containerEl.createEl("h3", { text: "File editing" });
+    new import_obsidian6.Setting(containerEl).setName("File editing").setHeading();
     new import_obsidian6.Setting(containerEl).setName("Let the AI modify notes").setDesc("Allow the assistant to create and edit notes in your vault. Turn off for a read-only chat.").addToggle((t) => t.setValue(s.allowEdits).onChange(async (v) => {
       s.allowEdits = v;
       await save();
@@ -913,17 +912,28 @@ var SettingsTab = class extends import_obsidian6.PluginSettingTab {
         }
       }));
     }
-    containerEl.createEl("h3", { text: "Conversation history" });
+    new import_obsidian6.Setting(containerEl).setName("Conversation history").setHeading();
     new import_obsidian6.Setting(containerEl).setName("Save-as-note folder").setDesc('Where "Save as note" puts conversations in your vault.').addText((t) => t.setPlaceholder("AI Chats").setValue(s.notesFolder).onChange(async (v) => {
       s.notesFolder = v;
       await save();
     }));
-    new import_obsidian6.Setting(containerEl).setName("Saved conversations").setDesc(`${this.plugin.history.all().length} chat(s) stored privately with the plugin. Search them with the "Search history" button.`).addButton((b) => b.setButtonText("Delete all").setWarning().onClick(async () => {
-      if (!confirm("Delete all saved conversations?")) return;
-      await this.plugin.history.clear();
-      new import_obsidian6.Notice("History cleared");
-      this.display();
-    }));
+    new import_obsidian6.Setting(containerEl).setName("Saved conversations").setDesc(`${this.plugin.history.all().length} chat(s) stored privately with the plugin. Search them with the "Search history" button.`).addButton((b) => {
+      let armed = false;
+      b.setButtonText("Delete all").setWarning().onClick(async () => {
+        if (!armed) {
+          armed = true;
+          b.setButtonText("Click again to confirm");
+          window.setTimeout(() => {
+            armed = false;
+            b.setButtonText("Delete all");
+          }, 4e3);
+          return;
+        }
+        await this.plugin.history.clear();
+        new import_obsidian6.Notice("History cleared");
+        this.display();
+      });
+    });
     new import_obsidian6.Setting(containerEl).setName("System prompt").addTextArea((t) => {
       t.inputEl.rows = 5;
       t.setValue(s.systemPrompt).onChange(async (v) => {
@@ -956,13 +966,13 @@ var AIWriterAssistantPlugin = class extends import_obsidian7.Plugin {
     const leaf = existing ?? this.app.workspace.getRightLeaf(false);
     if (!leaf) return;
     if (!existing) await leaf.setViewState({ type: VIEW_TYPE, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
   async openConversation(id) {
     await this.activateView();
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
     const view = leaf?.view;
-    if (view instanceof ChatView) view.loadConversation(id);
+    if (view instanceof ChatView) await view.loadConversation(id);
   }
   async saveSettings() {
     await this.saveData(this.settings);
