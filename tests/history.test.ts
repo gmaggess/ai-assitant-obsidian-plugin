@@ -83,6 +83,30 @@ describe("HistoryStore", () => {
     expect(store.all()).toEqual([]);
   });
 
+  it("keeps valid conversations and ignores invalid persisted entries", async () => {
+    const plugin = fakePlugin();
+    plugin._files.set("/plugins/ai-writer-assistant/history.json", JSON.stringify([null, { id: "bad" }, convo("valid", 100)]));
+    const store = new HistoryStore(plugin);
+    await store.load();
+    expect(store.all().map((c) => c.id)).toEqual(["valid"]);
+  });
+
+  it("treats a non-array history file as empty", async () => {
+    const plugin = fakePlugin();
+    plugin._files.set("/plugins/ai-writer-assistant/history.json", '{"messages":[]}');
+    const store = new HistoryStore(plugin);
+    await store.load();
+    expect(store.all()).toEqual([]);
+  });
+
+  it("rejects non-string scopes so resumed chats cannot widen their context", async () => {
+    const plugin = fakePlugin();
+    plugin._files.set("/plugins/ai-writer-assistant/history.json", JSON.stringify([{ ...convo("bad", 100), scope: ["file"] }]));
+    const store = new HistoryStore(plugin);
+    await store.load();
+    expect(store.all()).toEqual([]);
+  });
+
   it("returns copies from all()", async () => {
     const store = new HistoryStore(fakePlugin());
     await store.upsert(convo("a", 1));

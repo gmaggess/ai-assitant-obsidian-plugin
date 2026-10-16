@@ -30,3 +30,4 @@
 .sac-diff-del { background: rgba(var(--color-red-rgb), 0.15); padding: 2px 4px; }
 .sac-diff-add { background: rgba(var(--color-green-rgb), 0.15); padding: 2px 4px; }
 .sac-change-actions { display: flex; gap: 6px; }
+.sac-search-input { flex: 1; }

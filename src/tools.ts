@@ -1,5 +1,6 @@
 import { App, TFile, normalizePath } from "obsidian";
 import { EditMode, ToolDef, ToolHost } from "./types";
+import { recordOf } from "./data";
 
 export type ChangeRequest =
   | { kind: "create"; path: string; content: string }
@@ -63,9 +64,17 @@ export class VaultTools implements ToolHost {
 
   constructor(private app: App, private mode: () => EditMode, private confirm: (c: ChangeRequest) => Promise<boolean>) {}
 
-  async run(name: string, input: any): Promise<string> {
-    const bad = checkPath(input?.path, this.app.vault.configDir);
+  async run(name: string, value: unknown): Promise<string> {
+    const input = recordOf(value);
+    const bad = checkPath(input.path, this.app.vault.configDir);
     if (bad) return `Error: ${bad}`;
+    if (typeof input.path !== "string") return "Error: path is required.";
+    for (const key of ["content", "old_text", "new_text"]) {
+      if (input[key] !== undefined && typeof input[key] !== "string") return `Error: ${key} must be text.`;
+    }
+    const content = typeof input.content === "string" ? input.content : "";
+    const oldText = typeof input.old_text === "string" ? input.old_text : "";
+    const newText = typeof input.new_text === "string" ? input.new_text : "";
     const path = normalizePath(input.path);
     const existing = this.app.vault.getAbstractFileByPath(path);
 
@@ -77,7 +86,6 @@ export class VaultTools implements ToolHost {
 
     if (name === "create_note") {
       if (existing) return `Error: ${path} already exists. Use edit_note or append_to_note.`;
-      const content = String(input.content ?? "");
       if (!(await this.approve({ kind: "create", path, content }))) return "The user declined this change.";
       const slash = path.lastIndexOf("/");
       if (slash > 0) await this.ensureFolder(path.slice(0, slash));
@@ -91,12 +99,12 @@ export class VaultTools implements ToolHost {
       let next: string;
       let req: ChangeRequest;
       if (name === "edit_note") {
-        const r = applyEdit(current, String(input.old_text ?? ""), String(input.new_text ?? ""));
+        const r = applyEdit(current, oldText, newText);
         if (!r.ok) return `Error: ${r.error}`;
         next = r.content;
-        req = { kind: "edit", path, oldText: String(input.old_text), newText: String(input.new_text ?? "") };
+        req = { kind: "edit", path, oldText, newText };
       } else {
-        const add = String(input.content ?? "");
+        const add = content;
         next = current + (current.endsWith("\n") || !current ? "" : "\n") + add;
         req = { kind: "append", path, content: add };
       }

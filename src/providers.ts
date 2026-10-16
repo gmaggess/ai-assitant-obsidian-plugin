@@ -1,13 +1,15 @@
 import { requestUrl } from "obsidian";
 import { ChatMessage, Effort, PluginSettings, ToolHost } from "./types";
+import { errorMessage, parseJson, recordOf, recordsOf, toolString } from "./data";
 
 // Models that rejected `thinking.type: enabled` this session; they get adaptive thinking up front.
 const ADAPTIVE_ONLY = new Set<string>();
 const THINKING_BUDGET: Record<Effort, number> = { low: 2048, medium: 6000, high: 16000, xhigh: 24000, max: 32000 };
 
-function errMsg(status: number, body: any): string {
-  const m = body?.error?.message ?? body?.message ?? JSON.stringify(body);
-  return `API error ${status}: ${m}`;
+function errMsg(status: number, body: unknown): string {
+  const data = recordOf(body);
+  const m = recordOf(data.error).message ?? data.message ?? JSON.stringify(body);
+  return `API error ${status}: ${typeof m === "string" ? m : JSON.stringify(m)}`;
 }
 
 export async function sendChat(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
@@ -16,8 +18,13 @@ export async function sendChat(s: PluginSettings, system: string, messages: Chat
 
 async function sendAnthropic(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
   if (!s.anthropicApiKey) throw new Error("Add your Anthropic API key in plugin settings.");
-  const msgs: any[] = [...messages];
-  const body: any = { model: s.anthropicModel, max_tokens: s.maxOutputTokens, system, messages: msgs };
+  const msgs: unknown[] = [...messages];
+  const body: {
+    model: string; max_tokens: number; system: string; messages: unknown[];
+    tools?: Record<string, unknown>[];
+    thinking?: { type: string; budget_tokens?: number };
+    output_config?: { effort: Effort };
+  } = { model: s.anthropicModel, max_tokens: s.maxOutputTokens, system, messages: msgs };
   if (tools) body.tools = tools.defs.map((d) => ({ name: d.name, description: d.description, input_schema: d.schema }));
   const useAdaptive = () => { body.thinking = { type: "adaptive" }; body.output_config = { effort: s.effort }; };
   if (s.anthropicEffortMode === "thinking-budget" && ADAPTIVE_ONLY.has(s.anthropicModel)) {
@@ -51,20 +58,22 @@ async function sendAnthropic(s: PluginSettings, system: string, messages: ChatMe
       res = await call();
     }
     if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-    const data = res.json;
+    const data = recordOf(res.json);
     if (data.stop_reason === "refusal") return "_The model declined to answer this request._";
-    const content: any[] = data.content ?? [];
-    const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    const content = recordsOf(data.content);
+    const text = content.filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
     if (text) texts.push(text);
     const calls = content.filter((b) => b.type === "tool_use");
     if (!tools || data.stop_reason !== "tool_use" || calls.length === 0) return texts.join("\n\n");
     // Echo the assistant turn verbatim (keeps thinking blocks/signatures intact), then answer each tool call.
     msgs.push({ role: "assistant", content });
-    const results: any[] = [];
+    const results: unknown[] = [];
     for (const c of calls) {
+      const name = toolString(c.name);
+      const id = toolString(c.id);
       let out: string;
-      try { out = await tools.run(c.name, c.input); } catch (e: any) { out = `Error: ${e?.message ?? e}`; }
-      results.push({ type: "tool_result", tool_use_id: c.id, content: out });
+      try { out = await tools.run(name, c.input); } catch (e) { out = `Error: ${errorMessage(e)}`; }
+      results.push({ type: "tool_result", tool_use_id: id, content: out });
     }
     msgs.push({ role: "user", content: results });
   }
@@ -75,8 +84,8 @@ async function sendAnthropic(s: PluginSettings, system: string, messages: ChatMe
 async function sendOpenAI(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
   if (!s.openaiApiKey) throw new Error("Add your OpenAI API key in plugin settings.");
   const effort = s.effort === "max" || s.effort === "xhigh" ? "high" : s.effort;
-  const input: any[] = messages.map((m) => ({ role: m.role, content: m.content }));
-  const body: any = {
+  const input: unknown[] = messages.map((m) => ({ role: m.role, content: m.content }));
+  const body: Record<string, unknown> = {
     model: s.openaiModel,
     instructions: system,
     input,
@@ -99,33 +108,35 @@ async function sendOpenAI(s: PluginSettings, system: string, messages: ChatMessa
       res = await post(s, body);
     }
     if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-    const data = res.json;
-    const output: any[] = data.output ?? [];
+    const data = recordOf(res.json);
+    const output = recordsOf(data.output);
     const calls = output.filter((i) => i.type === "function_call");
     if (!tools || calls.length === 0) {
       const parts: string[] = [];
-      if (data.output_text) parts.push(data.output_text);
+      if (typeof data.output_text === "string" && data.output_text) parts.push(data.output_text);
       else for (const item of output) {
-        if (item.type === "message") for (const c of item.content ?? []) if (c.type === "output_text") parts.push(c.text);
+        if (item.type === "message") for (const c of recordsOf(item.content)) if (c.type === "output_text" && typeof c.text === "string") parts.push(c.text);
       }
       if (parts.length) texts.push(parts.join("\n"));
       return texts.join("\n\n") || "_(empty response — try raising Max output tokens)_";
     }
     for (const item of output) {
-      if (item.type === "message") for (const c of item.content ?? []) if (c.type === "output_text") texts.push(c.text);
+      if (item.type === "message") for (const c of recordsOf(item.content)) if (c.type === "output_text" && typeof c.text === "string") texts.push(c.text);
     }
     input.push(...output);
     for (const c of calls) {
+      const name = toolString(c.name);
+      const id = toolString(c.call_id);
       let out: string;
-      try { out = await tools.run(c.name, JSON.parse(c.arguments || "{}")); } catch (e: any) { out = `Error: ${e?.message ?? e}`; }
-      input.push({ type: "function_call_output", call_id: c.call_id, output: out });
+      try { out = await tools.run(name, parseJson(toolString(c.arguments))); } catch (e) { out = `Error: ${errorMessage(e)}`; }
+      input.push({ type: "function_call_output", call_id: id, output: out });
     }
   }
   texts.push("_(stopped after too many tool steps)_");
   return texts.join("\n\n");
 }
 
-function post(s: PluginSettings, body: any) {
+function post(s: PluginSettings, body: Record<string, unknown>) {
   return requestUrl({
     url: "https://api.openai.com/v1/responses",
     method: "POST",
@@ -143,7 +154,7 @@ export async function fetchModels(s: PluginSettings, provider: "anthropic" | "op
       headers: { "x-api-key": s.anthropicApiKey, "anthropic-version": "2023-06-01" },
     });
     if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-    return (res.json.data ?? []).map((m: any) => m.id);
+    return recordsOf(recordOf(res.json).data).flatMap((m) => typeof m.id === "string" ? [m.id] : []);
   }
   const res = await requestUrl({
     url: "https://api.openai.com/v1/models",
@@ -151,8 +162,8 @@ export async function fetchModels(s: PluginSettings, provider: "anthropic" | "op
     headers: { authorization: `Bearer ${s.openaiApiKey}` },
   });
   if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-  return (res.json.data ?? [])
-    .map((m: any) => m.id as string)
+  return recordsOf(recordOf(res.json).data)
+    .flatMap((m) => typeof m.id === "string" ? [m.id] : [])
     .filter((id: string) => /^(gpt|o\d|chatgpt)/.test(id) && !/(audio|realtime|tts|transcribe|image|embedding|search)/.test(id))
     .sort();
 }

@@ -3,18 +3,18 @@ import { ChatView, VIEW_TYPE } from "./view";
 import { SettingsTab } from "./settings";
 import { HistoryStore } from "./history";
 import { SearchModal } from "./search";
-import { DEFAULT_SETTINGS, PluginSettings } from "./types";
+import { loadSettings, PluginSettings } from "./types";
 
 export default class AIWriterAssistantPlugin extends Plugin {
   settings!: PluginSettings;
   history!: HistoryStore;
 
   async onload() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = loadSettings(await this.loadData());
     this.history = new HistoryStore(this);
     await this.history.load();
     this.registerView(VIEW_TYPE, (leaf: WorkspaceLeaf) => new ChatView(leaf, this));
-    this.addRibbonIcon("message-square", "Open AI-Writer Assistant", () => this.activateView());
+    this.addRibbonIcon("message-square", "Open chat panel", () => this.activateView());
     this.addCommand({ id: "open-chat", name: "Open chat panel", callback: () => this.activateView() });
     this.addCommand({ id: "search-history", name: "Search past conversations", callback: () => new SearchModal(this.app, this).open() });
     this.addSettingTab(new SettingsTab(this.app, this));

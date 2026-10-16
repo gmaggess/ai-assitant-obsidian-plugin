@@ -73,11 +73,38 @@ ${body}
 
 // src/providers.ts
 var import_obsidian = require("obsidian");
+
+// src/data.ts
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function recordOf(value) {
+  return isRecord(value) ? value : {};
+}
+function arrayOf(value) {
+  return Array.isArray(value) ? value : [];
+}
+function recordsOf(value) {
+  return arrayOf(value).filter(isRecord);
+}
+function parseJson(text) {
+  return JSON.parse(text);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function toolString(value) {
+  if (typeof value !== "string" || !value) throw new Error("Invalid provider tool call.");
+  return value;
+}
+
+// src/providers.ts
 var ADAPTIVE_ONLY = /* @__PURE__ */ new Set();
 var THINKING_BUDGET = { low: 2048, medium: 6e3, high: 16e3, xhigh: 24e3, max: 32e3 };
 function errMsg(status, body) {
-  const m = body?.error?.message ?? body?.message ?? JSON.stringify(body);
-  return `API error ${status}: ${m}`;
+  const data = recordOf(body);
+  const m = recordOf(data.error).message ?? data.message ?? JSON.stringify(body);
+  return `API error ${status}: ${typeof m === "string" ? m : JSON.stringify(m)}`;
 }
 async function sendChat(s, system, messages, tools) {
   return s.provider === "anthropic" ? sendAnthropic(s, system, messages, tools) : sendOpenAI(s, system, messages, tools);
@@ -121,23 +148,25 @@ async function sendAnthropic(s, system, messages, tools) {
       res = await call();
     }
     if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-    const data = res.json;
+    const data = recordOf(res.json);
     if (data.stop_reason === "refusal") return "_The model declined to answer this request._";
-    const content = data.content ?? [];
-    const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    const content = recordsOf(data.content);
+    const text = content.filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
     if (text) texts.push(text);
     const calls = content.filter((b) => b.type === "tool_use");
     if (!tools || data.stop_reason !== "tool_use" || calls.length === 0) return texts.join("\n\n");
     msgs.push({ role: "assistant", content });
     const results = [];
     for (const c of calls) {
+      const name = toolString(c.name);
+      const id = toolString(c.id);
       let out;
       try {
-        out = await tools.run(c.name, c.input);
+        out = await tools.run(name, c.input);
       } catch (e) {
-        out = `Error: ${e?.message ?? e}`;
+        out = `Error: ${errorMessage(e)}`;
       }
-      results.push({ type: "tool_result", tool_use_id: c.id, content: out });
+      results.push({ type: "tool_result", tool_use_id: id, content: out });
     }
     msgs.push({ role: "user", content: results });
   }
@@ -169,15 +198,15 @@ async function sendOpenAI(s, system, messages, tools) {
       res = await post(s, body);
     }
     if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-    const data = res.json;
-    const output = data.output ?? [];
+    const data = recordOf(res.json);
+    const output = recordsOf(data.output);
     const calls = output.filter((i) => i.type === "function_call");
     if (!tools || calls.length === 0) {
       const parts = [];
-      if (data.output_text) parts.push(data.output_text);
+      if (typeof data.output_text === "string" && data.output_text) parts.push(data.output_text);
       else for (const item of output) {
         if (item.type === "message") {
-          for (const c of item.content ?? []) if (c.type === "output_text") parts.push(c.text);
+          for (const c of recordsOf(item.content)) if (c.type === "output_text" && typeof c.text === "string") parts.push(c.text);
         }
       }
       if (parts.length) texts.push(parts.join("\n"));
@@ -185,18 +214,20 @@ async function sendOpenAI(s, system, messages, tools) {
     }
     for (const item of output) {
       if (item.type === "message") {
-        for (const c of item.content ?? []) if (c.type === "output_text") texts.push(c.text);
+        for (const c of recordsOf(item.content)) if (c.type === "output_text" && typeof c.text === "string") texts.push(c.text);
       }
     }
     input.push(...output);
     for (const c of calls) {
+      const name = toolString(c.name);
+      const id = toolString(c.call_id);
       let out;
       try {
-        out = await tools.run(c.name, JSON.parse(c.arguments || "{}"));
+        out = await tools.run(name, parseJson(toolString(c.arguments)));
       } catch (e) {
-        out = `Error: ${e?.message ?? e}`;
+        out = `Error: ${errorMessage(e)}`;
       }
-      input.push({ type: "function_call_output", call_id: c.call_id, output: out });
+      input.push({ type: "function_call_output", call_id: id, output: out });
     }
   }
   texts.push("_(stopped after too many tool steps)_");
@@ -219,7 +250,7 @@ async function fetchModels(s, provider) {
       headers: { "x-api-key": s.anthropicApiKey, "anthropic-version": "2023-06-01" }
     });
     if (res2.status >= 400) throw new Error(errMsg(res2.status, res2.json));
-    return (res2.json.data ?? []).map((m) => m.id);
+    return recordsOf(recordOf(res2.json).data).flatMap((m) => typeof m.id === "string" ? [m.id] : []);
   }
   const res = await (0, import_obsidian.requestUrl)({
     url: "https://api.openai.com/v1/models",
@@ -227,10 +258,14 @@ async function fetchModels(s, provider) {
     headers: { authorization: `Bearer ${s.openaiApiKey}` }
   });
   if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-  return (res.json.data ?? []).map((m) => m.id).filter((id) => /^(gpt|o\d|chatgpt)/.test(id) && !/(audio|realtime|tts|transcribe|image|embedding|search)/.test(id)).sort();
+  return recordsOf(recordOf(res.json).data).flatMap((m) => typeof m.id === "string" ? [m.id] : []).filter((id) => /^(gpt|o\d|chatgpt)/.test(id) && !/(audio|realtime|tts|transcribe|image|embedding|search)/.test(id)).sort();
 }
 
 // src/history.ts
+function isConversation(value) {
+  if (!isRecord(value)) return false;
+  return [value.id, value.title, value.scopeLabel, value.provider, value.model].every((v) => typeof v === "string") && (value.scope === "file" || value.scope === "folder" || value.scope === "vault") && typeof value.createdAt === "number" && Number.isFinite(value.createdAt) && typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) && (value.folderPath === void 0 || typeof value.folderPath === "string") && (value.effort === void 0 || typeof value.effort === "string") && Array.isArray(value.messages) && arrayOf(value.messages).every((m) => isRecord(m) && (m.role === "user" || m.role === "assistant") && typeof m.content === "string");
+}
 var HistoryStore = class {
   constructor(plugin) {
     this.plugin = plugin;
@@ -242,7 +277,7 @@ var HistoryStore = class {
   async load() {
     const a = this.plugin.app.vault.adapter;
     try {
-      if (await a.exists(this.path)) this.items = JSON.parse(await a.read(this.path));
+      if (await a.exists(this.path)) this.items = arrayOf(parseJson(await a.read(this.path))).filter(isConversation);
     } catch {
       this.items = [];
     }
@@ -289,10 +324,10 @@ ${body}
 function parseResult(text, valid) {
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("The model didn't return a readable result. Try again.");
-  const raw = JSON.parse(m[0]);
+  const raw = recordOf(parseJson(m[0]));
   return {
-    summary: String(raw.summary ?? ""),
-    matches: (Array.isArray(raw.matches) ? raw.matches : []).filter((x) => valid.has(String(x?.id))).map((x) => ({ id: String(x.id), reason: String(x.reason ?? "") }))
+    summary: typeof raw.summary === "string" ? raw.summary : "",
+    matches: recordsOf(raw.matches).filter((x) => typeof x.id === "string" && valid.has(x.id)).map((x) => ({ id: String(x.id), reason: typeof x.reason === "string" ? x.reason : "" }))
   };
 }
 async function searchHistory(plugin, query) {
@@ -317,7 +352,7 @@ var SearchModal = class extends import_obsidian2.Modal {
     const { contentEl } = this;
     this.titleEl.setText("Search past conversations");
     const row = contentEl.createDiv("sac-input-row");
-    const input = row.createEl("input", { type: "text", attr: { placeholder: "e.g. what did I decide about the Q3 reading list?", style: "flex:1" } });
+    const input = row.createEl("input", { type: "text", cls: "sac-search-input", attr: { placeholder: "Search your past conversations" } });
     const btn = row.createEl("button", { text: "Search", cls: "mod-cta" });
     const out = contentEl.createDiv({ cls: "sac-search-out" });
     contentEl.createDiv({ cls: "sac-scope-info", text: `${this.plugin.history.all().length} saved conversation(s). Uses your selected provider and model.` });
@@ -345,7 +380,7 @@ var SearchModal = class extends import_obsidian2.Modal {
         }
       } catch (e) {
         out.empty();
-        out.createDiv({ cls: "sac-msg error", text: e?.message ?? String(e) });
+        out.createDiv({ cls: "sac-msg error", text: errorMessage(e) });
         new import_obsidian2.Notice("Search failed");
       } finally {
         btn.disabled = false;
@@ -435,6 +470,33 @@ var DEFAULT_SETTINGS = {
 function editModeOf(s) {
   return !s.allowEdits ? "off" : s.requireApproval ? "ask" : "auto";
 }
+function loadSettings(value) {
+  const raw = recordOf(value);
+  const defaults = DEFAULT_SETTINGS;
+  const text = (key) => typeof raw[key] === "string" ? raw[key] : defaults[key];
+  const number = (key) => {
+    const n = raw[key];
+    return typeof n === "number" && Number.isSafeInteger(n) && n > 0 && (key !== "maxToolRounds" || n <= 200) ? n : defaults[key];
+  };
+  const list = (key) => Array.isArray(raw[key]) ? arrayOf(raw[key]).filter((v) => typeof v === "string") : [...defaults[key]];
+  const result = { ...defaults, anthropicModels: list("anthropicModels"), openaiModels: list("openaiModels") };
+  for (const key of ["anthropicApiKey", "openaiApiKey", "anthropicModel", "openaiModel", "systemPrompt", "notesFolder"]) {
+    const candidate = text(key);
+    if (typeof candidate === "string") result[key] = candidate;
+  }
+  for (const key of ["allowEdits", "requireApproval", "includeSubfolders"]) {
+    const candidate = raw[key];
+    if (typeof candidate === "boolean") result[key] = candidate;
+  }
+  result.maxContextChars = number("maxContextChars");
+  result.maxOutputTokens = number("maxOutputTokens");
+  result.maxToolRounds = number("maxToolRounds");
+  if (raw.provider === "anthropic" || raw.provider === "openai") result.provider = raw.provider;
+  if (raw.defaultScope === "file" || raw.defaultScope === "folder" || raw.defaultScope === "vault") result.defaultScope = raw.defaultScope;
+  if (raw.anthropicEffortMode === "effort" || raw.anthropicEffortMode === "thinking-budget" || raw.anthropicEffortMode === "none") result.anthropicEffortMode = raw.anthropicEffortMode;
+  if (raw.effort === "low" || raw.effort === "medium" || raw.effort === "high" || raw.effort === "xhigh" || raw.effort === "max") result.effort = raw.effort;
+  return result;
+}
 
 // src/tools.ts
 var import_obsidian4 = require("obsidian");
@@ -488,9 +550,17 @@ var VaultTools = class {
     this.defs = TOOL_DEFS;
     this.modified = /* @__PURE__ */ new Set();
   }
-  async run(name, input) {
-    const bad = checkPath(input?.path, this.app.vault.configDir);
+  async run(name, value) {
+    const input = recordOf(value);
+    const bad = checkPath(input.path, this.app.vault.configDir);
     if (bad) return `Error: ${bad}`;
+    if (typeof input.path !== "string") return "Error: path is required.";
+    for (const key of ["content", "old_text", "new_text"]) {
+      if (input[key] !== void 0 && typeof input[key] !== "string") return `Error: ${key} must be text.`;
+    }
+    const content = typeof input.content === "string" ? input.content : "";
+    const oldText = typeof input.old_text === "string" ? input.old_text : "";
+    const newText = typeof input.new_text === "string" ? input.new_text : "";
     const path = (0, import_obsidian4.normalizePath)(input.path);
     const existing = this.app.vault.getAbstractFileByPath(path);
     if (name === "read_note") {
@@ -500,7 +570,6 @@ var VaultTools = class {
     if (this.mode() === "off") return "Error: file editing is disabled in settings.";
     if (name === "create_note") {
       if (existing) return `Error: ${path} already exists. Use edit_note or append_to_note.`;
-      const content = String(input.content ?? "");
       if (!await this.approve({ kind: "create", path, content })) return "The user declined this change.";
       const slash = path.lastIndexOf("/");
       if (slash > 0) await this.ensureFolder(path.slice(0, slash));
@@ -514,12 +583,12 @@ var VaultTools = class {
       let next;
       let req;
       if (name === "edit_note") {
-        const r = applyEdit(current, String(input.old_text ?? ""), String(input.new_text ?? ""));
+        const r = applyEdit(current, oldText, newText);
         if (!r.ok) return `Error: ${r.error}`;
         next = r.content;
-        req = { kind: "edit", path, oldText: String(input.old_text), newText: String(input.new_text ?? "") };
+        req = { kind: "edit", path, oldText, newText };
       } else {
-        const add = String(input.content ?? "");
+        const add = content;
         next = current + (current.endsWith("\n") || !current ? "" : "\n") + add;
         req = { kind: "append", path, content: add };
       }
@@ -576,7 +645,7 @@ var ChatView = class extends import_obsidian5.ItemView {
     return VIEW_TYPE;
   }
   getDisplayText() {
-    return "AI-Writer Assistant";
+    return this.plugin.manifest.name;
   }
   getIcon() {
     return "message-square";
@@ -660,7 +729,7 @@ var ChatView = class extends import_obsidian5.ItemView {
       new import_obsidian5.Notice(`Saved to ${file.path}`);
       await this.app.workspace.getLeaf("tab").openFile(file);
     } catch (e) {
-      new import_obsidian5.Notice(`Couldn't save note: ${e?.message ?? e}`);
+      new import_obsidian5.Notice(`Couldn't save note: ${errorMessage(e)}`);
     }
   }
   askApproval(c, before) {
@@ -742,7 +811,7 @@ var ChatView = class extends import_obsidian5.ItemView {
     try {
       const s = this.plugin.settings;
       const ctx = await buildContext(this.app, this.chatScope, s.includeSubfolders, s.maxContextChars, this.chatScope === "folder" ? this.chatFolder : void 0);
-      if (ctx.truncated) new import_obsidian5.Notice("Context was truncated to fit Max context characters.");
+      if (ctx.truncated) new import_obsidian5.Notice("Context was truncated to fit max context characters.");
       const tools = editModeOf(s) === "off" ? void 0 : new VaultTools(this.app, () => editModeOf(this.plugin.settings), (c) => this.askApproval(c, pending));
       const system = `${s.systemPrompt}${tools ? EDIT_INSTRUCTIONS : ""}
 
@@ -783,7 +852,7 @@ _Modified: ${[...tools.modified].map((p) => `[[${p}]]`).join(", ")}_`;
         pending.addClass("sac-scope-info");
       } else {
         pending.addClass("error");
-        pending.setText(e?.message ?? String(e));
+        pending.setText(errorMessage(e));
       }
     } finally {
       this.busy = false;
@@ -807,156 +876,233 @@ var SettingsTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
+    this.legacyCleanups = [];
   }
-  display() {
-    const { containerEl } = this;
+  getSettingDefinitions() {
     const s = this.plugin.settings;
     const save = () => this.plugin.saveSettings();
-    containerEl.empty();
-    new import_obsidian6.Setting(containerEl).setName("API keys").setHeading();
-    new import_obsidian6.Setting(containerEl).setName("Anthropic API key").setDesc("console.anthropic.com \u2192 API keys").addText((t) => {
-      t.inputEl.type = "password";
-      t.setValue(s.anthropicApiKey).onChange(async (v) => {
-        s.anthropicApiKey = v.trim();
-        await save();
-      });
-    });
-    new import_obsidian6.Setting(containerEl).setName("OpenAI API key").setDesc("platform.openai.com \u2192 API keys").addText((t) => {
-      t.inputEl.type = "password";
-      t.setValue(s.openaiApiKey).onChange(async (v) => {
-        s.openaiApiKey = v.trim();
-        await save();
-      });
-    });
-    new import_obsidian6.Setting(containerEl).setName("Model").setHeading();
-    new import_obsidian6.Setting(containerEl).setName("Provider").addDropdown((d) => d.addOptions({ anthropic: "Claude", openai: "ChatGPT" }).setValue(s.provider).onChange(async (v) => {
-      s.provider = v;
-      await save();
-    }));
-    for (const p of ["anthropic", "openai"]) {
+    const row = (name, desc, render, visible) => ({ name, desc, render, visible });
+    const models = ["anthropic", "openai"].map((p) => {
       const label = p === "anthropic" ? "Claude" : "ChatGPT";
-      new import_obsidian6.Setting(containerEl).setName(`${label} model`).setDesc("Pick from the list, or type any model ID.").addDropdown((d) => {
-        const list = p === "anthropic" ? s.anthropicModels : s.openaiModels;
-        list.forEach((m) => d.addOption(m, m));
-        d.setValue(p === "anthropic" ? s.anthropicModel : s.openaiModel).onChange(async (v) => {
-          if (p === "anthropic") s.anthropicModel = v;
-          else s.openaiModel = v;
+      return row(`${label} model`, "Pick from the list, or type any model ID.", (setting) => {
+        setting.addDropdown((d) => {
+          const list = p === "anthropic" ? s.anthropicModels : s.openaiModels;
+          list.forEach((m) => {
+            d.addOption(m, m);
+          });
+          d.setValue(p === "anthropic" ? s.anthropicModel : s.openaiModel).onChange(async (v) => {
+            if (p === "anthropic") s.anthropicModel = v;
+            else s.openaiModel = v;
+            await save();
+            this.refreshSettings();
+          });
+        }).addText((t) => t.setPlaceholder("Custom model ID").setValue(p === "anthropic" ? s.anthropicModel : s.openaiModel).onChange(async (v) => {
+          if (p === "anthropic") s.anthropicModel = v.trim();
+          else s.openaiModel = v.trim();
           await save();
-          this.display();
-        });
-      }).addText((t) => t.setPlaceholder("custom model id").setValue(p === "anthropic" ? s.anthropicModel : s.openaiModel).onChange(async (v) => {
-        if (p === "anthropic") s.anthropicModel = v.trim();
-        else s.openaiModel = v.trim();
-        await save();
-      })).addButton((b) => b.setButtonText("Refresh list").onClick(async () => {
-        try {
-          const models = await fetchModels(s, p);
-          if (!models.length) throw new Error("No models returned");
-          if (p === "anthropic") s.anthropicModels = models;
-          else s.openaiModels = models;
-          await save();
-          new import_obsidian6.Notice(`Loaded ${models.length} ${label} models`);
-          this.display();
-        } catch (e) {
-          new import_obsidian6.Notice(e.message ?? String(e));
-        }
-      }));
-    }
-    new import_obsidian6.Setting(containerEl).setName("Effort level").setDesc("How hard the model thinks. OpenAI caps at high.").addDropdown((d) => d.addOptions({ low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" }).setValue(s.effort).onChange(async (v) => {
-      s.effort = v;
-      await save();
-    }));
-    new import_obsidian6.Setting(containerEl).setName("Claude effort method").setDesc("'Effort' uses the newer effort parameter; 'Thinking budget' uses extended thinking tokens (widest model support).").addDropdown((d) => d.addOptions({ effort: "Effort parameter", "thinking-budget": "Thinking budget", none: "Off" }).setValue(s.anthropicEffortMode).onChange(async (v) => {
-      s.anthropicEffortMode = v;
-      await save();
-    }));
-    new import_obsidian6.Setting(containerEl).setName("Max output tokens").addText((t) => t.setValue(String(s.maxOutputTokens)).onChange(async (v) => {
-      const n = parseInt(v);
-      if (n > 0) {
-        s.maxOutputTokens = n;
-        await save();
-      }
-    }));
-    new import_obsidian6.Setting(containerEl).setName("Scope").setHeading();
-    new import_obsidian6.Setting(containerEl).setName("Default scope").setDesc("Can be changed per chat in the chat panel.").addDropdown((d) => d.addOptions({ file: "Current file", folder: "Current folder", vault: "Whole vault" }).setValue(s.defaultScope).onChange(async (v) => {
-      s.defaultScope = v;
-      await save();
-    }));
-    new import_obsidian6.Setting(containerEl).setName("Folder scope includes subfolders").addToggle((t) => t.setValue(s.includeSubfolders).onChange(async (v) => {
-      s.includeSubfolders = v;
-      await save();
-    }));
-    new import_obsidian6.Setting(containerEl).setName("Max context characters").setDesc("Notes beyond this limit are dropped (active note always first).").addText((t) => t.setValue(String(s.maxContextChars)).onChange(async (v) => {
-      const n = parseInt(v);
-      if (n > 0) {
-        s.maxContextChars = n;
-        await save();
-      }
-    }));
-    new import_obsidian6.Setting(containerEl).setName("File editing").setHeading();
-    new import_obsidian6.Setting(containerEl).setName("Let the AI modify notes").setDesc("Allow the assistant to create and edit notes in your vault. Turn off for a read-only chat.").addToggle((t) => t.setValue(s.allowEdits).onChange(async (v) => {
-      s.allowEdits = v;
-      await save();
-      this.display();
-    }));
-    if (s.allowEdits) {
-      new import_obsidian6.Setting(containerEl).setName("Require approval for changes").setDesc("Show a preview and wait for Apply before anything is written. Turn off to apply changes immediately.").addToggle((t) => t.setValue(s.requireApproval).onChange(async (v) => {
-        s.requireApproval = v;
-        await save();
-      }));
-      new import_obsidian6.Setting(containerEl).setName("Max tool steps per request").setDesc("Safety cap on how many read/edit steps the AI can take before it must stop. Raise it for bulk edits.").addText((t) => t.setValue(String(s.maxToolRounds)).onChange(async (v) => {
-        const n = parseInt(v);
-        if (n > 0 && n <= 200) {
-          s.maxToolRounds = n;
-          await save();
-        }
-      }));
-    }
-    new import_obsidian6.Setting(containerEl).setName("Conversation history").setHeading();
-    new import_obsidian6.Setting(containerEl).setName("Save-as-note folder").setDesc('Where "Save as note" puts conversations in your vault.').addText((t) => t.setPlaceholder("AI Chats").setValue(s.notesFolder).onChange(async (v) => {
-      s.notesFolder = v;
-      await save();
-    }));
-    new import_obsidian6.Setting(containerEl).setName("Saved conversations").setDesc(`${this.plugin.history.all().length} chat(s) stored privately with the plugin. Search them with the "Search history" button.`).addButton((b) => {
-      let armed = false;
-      b.setButtonText("Delete all").setWarning().onClick(async () => {
-        if (!armed) {
-          armed = true;
-          b.setButtonText("Click again to confirm");
-          window.setTimeout(() => {
-            armed = false;
-            b.setButtonText("Delete all");
-          }, 4e3);
-          return;
-        }
-        await this.plugin.history.clear();
-        new import_obsidian6.Notice("History cleared");
-        this.display();
+        })).addButton((b) => b.setButtonText("Refresh list").onClick(async () => {
+          try {
+            const models2 = await fetchModels(s, p);
+            if (!models2.length) throw new Error("No models returned");
+            if (p === "anthropic") s.anthropicModels = models2;
+            else s.openaiModels = models2;
+            await save();
+            new import_obsidian6.Notice(`Loaded ${models2.length} ${label} models`);
+            this.refreshSettings();
+          } catch (e) {
+            new import_obsidian6.Notice(errorMessage(e));
+          }
+        }));
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("System prompt").addTextArea((t) => {
-      t.inputEl.rows = 5;
-      t.setValue(s.systemPrompt).onChange(async (v) => {
-        s.systemPrompt = v;
-        await save();
-      });
-    });
-    const support = containerEl.createDiv("sac-support");
-    support.createSpan({ text: "Enjoying AI-Writer Assistant? " });
-    const a = support.createEl("a", { text: "\u2615 Buy me a coffee", href: DONATION_URL });
-    a.setAttr("target", "_blank");
-    a.setAttr("rel", "noopener");
+    return [
+      { type: "group", heading: "API keys", items: [
+        row("Anthropic API key", "console.anthropic.com \u2192 API keys", (setting) => {
+          setting.addText((t) => {
+            t.inputEl.type = "password";
+            t.setValue(s.anthropicApiKey).onChange(async (v) => {
+              s.anthropicApiKey = v.trim();
+              await save();
+            });
+          });
+        }),
+        row("OpenAI API key", "platform.openai.com \u2192 API keys", (setting) => {
+          setting.addText((t) => {
+            t.inputEl.type = "password";
+            t.setValue(s.openaiApiKey).onChange(async (v) => {
+              s.openaiApiKey = v.trim();
+              await save();
+            });
+          });
+        })
+      ] },
+      { type: "group", heading: "Model", items: [
+        row("Provider", "", (setting) => {
+          setting.addDropdown((d) => d.addOptions({ anthropic: "Claude", openai: "ChatGPT" }).setValue(s.provider).onChange(async (v) => {
+            s.provider = v;
+            await save();
+          }));
+        }),
+        ...models,
+        row("Effort level", "How hard the model thinks. OpenAI caps at high.", (setting) => {
+          setting.addDropdown((d) => d.addOptions({ low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" }).setValue(s.effort).onChange(async (v) => {
+            s.effort = v;
+            await save();
+          }));
+        }),
+        row("Claude effort method", "Choose an effort parameter, thinking budget, or no extra reasoning.", (setting) => {
+          setting.addDropdown((d) => d.addOptions({ effort: "Effort parameter", "thinking-budget": "Thinking budget", none: "Off" }).setValue(s.anthropicEffortMode).onChange(async (v) => {
+            s.anthropicEffortMode = v;
+            await save();
+          }));
+        }),
+        row("Max output tokens", "", (setting) => {
+          setting.addText((t) => t.setValue(String(s.maxOutputTokens)).onChange(async (v) => {
+            const n = parseInt(v);
+            if (n > 0) {
+              s.maxOutputTokens = n;
+              await save();
+            }
+          }));
+        })
+      ] },
+      { type: "group", heading: "Scope", items: [
+        row("Default scope", "Can be changed per chat in the chat panel.", (setting) => {
+          setting.addDropdown((d) => d.addOptions({ file: "Current file", folder: "Current folder", vault: "Whole vault" }).setValue(s.defaultScope).onChange(async (v) => {
+            s.defaultScope = v;
+            await save();
+          }));
+        }),
+        row("Folder scope includes subfolders", "", (setting) => {
+          setting.addToggle((t) => t.setValue(s.includeSubfolders).onChange(async (v) => {
+            s.includeSubfolders = v;
+            await save();
+          }));
+        }),
+        row("Max context characters", "Notes beyond this limit are dropped (active note always first).", (setting) => {
+          setting.addText((t) => t.setValue(String(s.maxContextChars)).onChange(async (v) => {
+            const n = parseInt(v);
+            if (n > 0) {
+              s.maxContextChars = n;
+              await save();
+            }
+          }));
+        })
+      ] },
+      { type: "group", heading: "File editing", items: [
+        row("Let the AI modify notes", "Allow the assistant to create and edit notes. Turn off for a read-only chat.", (setting) => {
+          setting.addToggle((t) => t.setValue(s.allowEdits).onChange(async (v) => {
+            s.allowEdits = v;
+            await save();
+            this.refreshSettings();
+          }));
+        }),
+        row("Require approval for changes", "Show a preview and wait for approval before writing. Turn off to apply changes immediately.", (setting) => {
+          setting.addToggle((t) => t.setValue(s.requireApproval).onChange(async (v) => {
+            s.requireApproval = v;
+            await save();
+          }));
+        }, () => s.allowEdits),
+        row("Max tool steps per request", "Safety cap on how many read/edit steps the AI can take before it must stop.", (setting) => {
+          setting.addText((t) => t.setValue(String(s.maxToolRounds)).onChange(async (v) => {
+            const n = parseInt(v);
+            if (n > 0 && n <= 200) {
+              s.maxToolRounds = n;
+              await save();
+            }
+          }));
+        }, () => s.allowEdits)
+      ] },
+      { type: "group", heading: "Conversation history", items: [
+        row("Save-as-note folder", "Where exported conversations are saved in your vault.", (setting) => {
+          setting.addText((t) => t.setPlaceholder("Conversation folder").setValue(s.notesFolder).onChange(async (v) => {
+            s.notesFolder = v;
+            await save();
+          }));
+        }),
+        row("Saved conversations", `${this.plugin.history.all().length} chat(s) stored with the plugin. Search them with the history search button.`, (setting) => {
+          let timer;
+          let armed = false;
+          setting.addButton((b) => {
+            if ((0, import_obsidian6.requireApiVersion)("1.13.0")) b.setDestructive();
+            else b.buttonEl.addClass("mod-warning");
+            b.setButtonText("Delete all").onClick(async () => {
+              if (!armed) {
+                armed = true;
+                b.setButtonText("Click again to confirm");
+                timer = window.setTimeout(() => {
+                  armed = false;
+                  b.setButtonText("Delete all");
+                }, 4e3);
+                return;
+              }
+              if (timer !== void 0) window.clearTimeout(timer);
+              await this.plugin.history.clear();
+              new import_obsidian6.Notice("History cleared");
+              this.refreshSettings();
+            });
+          });
+          return () => {
+            if (timer !== void 0) window.clearTimeout(timer);
+          };
+        }),
+        row("System prompt", "", (setting) => {
+          setting.addTextArea((t) => {
+            t.inputEl.rows = 5;
+            t.setValue(s.systemPrompt).onChange(async (v) => {
+              s.systemPrompt = v;
+              await save();
+            });
+          });
+        })
+      ] },
+      { type: "group", heading: "Support", items: [
+        row("Support development", "", (setting) => {
+          const a = setting.controlEl.createEl("a", { text: "Buy me a coffee", href: DONATION_URL });
+          a.setAttr("target", "_blank");
+          a.setAttr("rel", "noopener");
+        })
+      ] }
+    ];
+  }
+  /** Compatibility renderer for Obsidian versions before 1.13.0. */
+  display() {
+    this.renderLegacy();
+  }
+  refreshSettings() {
+    if ((0, import_obsidian6.requireApiVersion)("1.13.0")) this.update();
+    else this.renderLegacy();
+  }
+  renderLegacy() {
+    this.cleanLegacy();
+    this.containerEl.empty();
+    for (const group of this.getSettingDefinitions()) {
+      new import_obsidian6.Setting(this.containerEl).setName(group.heading).setHeading();
+      for (const row of group.items) {
+        if (row.visible && !row.visible()) continue;
+        const setting = new import_obsidian6.Setting(this.containerEl).setName(row.name).setDesc(row.desc ?? "");
+        const cleanup = row.render(setting);
+        if (cleanup) this.legacyCleanups.push(cleanup);
+      }
+    }
+  }
+  cleanLegacy() {
+    for (const cleanup of this.legacyCleanups.splice(0)) cleanup();
+  }
+  hide() {
+    this.cleanLegacy();
+    super.hide();
   }
 };
 
 // src/main.ts
 var AIWriterAssistantPlugin = class extends import_obsidian7.Plugin {
   async onload() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = loadSettings(await this.loadData());
     this.history = new HistoryStore(this);
     await this.history.load();
     this.registerView(VIEW_TYPE, (leaf) => new ChatView(leaf, this));
-    this.addRibbonIcon("message-square", "Open AI-Writer Assistant", () => this.activateView());
+    this.addRibbonIcon("message-square", "Open chat panel", () => this.activateView());
     this.addCommand({ id: "open-chat", name: "Open chat panel", callback: () => this.activateView() });
     this.addCommand({ id: "search-history", name: "Search past conversations", callback: () => new SearchModal(this.app, this).open() });
     this.addSettingTab(new SettingsTab(this.app, this));

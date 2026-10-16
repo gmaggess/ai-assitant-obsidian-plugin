@@ -1,5 +1,6 @@
 import type AIWriterAssistantPlugin from "./main";
 import { ChatMessage, Scope } from "./types";
+import { arrayOf, isRecord, parseJson } from "./data";
 
 export interface Conversation {
   id: string;
@@ -15,6 +16,18 @@ export interface Conversation {
   messages: ChatMessage[];
 }
 
+function isConversation(value: unknown): value is Conversation {
+  if (!isRecord(value)) return false;
+  return [value.id, value.title, value.scopeLabel, value.provider, value.model].every((v) => typeof v === "string")
+    && (value.scope === "file" || value.scope === "folder" || value.scope === "vault")
+    && typeof value.createdAt === "number" && Number.isFinite(value.createdAt)
+    && typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt)
+    && (value.folderPath === undefined || typeof value.folderPath === "string")
+    && (value.effort === undefined || typeof value.effort === "string")
+    && Array.isArray(value.messages) && arrayOf(value.messages).every((m) => isRecord(m)
+      && (m.role === "user" || m.role === "assistant") && typeof m.content === "string");
+}
+
 export class HistoryStore {
   private items: Conversation[] = [];
   constructor(private plugin: AIWriterAssistantPlugin) {}
@@ -23,7 +36,7 @@ export class HistoryStore {
 
   async load() {
     const a = this.plugin.app.vault.adapter;
-    try { if (await a.exists(this.path)) this.items = JSON.parse(await a.read(this.path)); } catch { this.items = []; }
+    try { if (await a.exists(this.path)) this.items = arrayOf(parseJson(await a.read(this.path))).filter(isConversation); } catch { this.items = []; }
   }
   private async persist() { await this.plugin.app.vault.adapter.write(this.path, JSON.stringify(this.items)); }
 

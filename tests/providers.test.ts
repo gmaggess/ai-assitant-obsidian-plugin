@@ -146,6 +146,12 @@ describe("fetchModels", () => {
     mockRequestUrl(async () => ({ status: 403, json: { error: { message: "denied" } }, text: "" }));
     await expect(fetchModels(settings(), "anthropic")).rejects.toThrow(/403/);
   });
+
+  it("ignores malformed model entries instead of treating them as model IDs", async () => {
+    mockRequestUrl(async () => ({ status: 200, json: { data: [null, {}, { id: 7 }, { id: "gpt-5" }] }, text: "" }));
+    expect(await fetchModels(settings(), "openai")).toEqual(["gpt-5"]);
+    expect(await fetchModels(settings(), "anthropic")).toEqual(["gpt-5"]);
+  });
 });
 
 describe("sendChat — tool loops", () => {
@@ -180,6 +186,14 @@ describe("sendChat — tool loops", () => {
     expect(log).toEqual([["edit_note", { path: "a.md" }]]);
     const second = JSON.parse(getRequestUrlCalls()[1].body!);
     expect(second.input.at(-1)).toEqual({ type: "function_call_output", call_id: "c1", output: "done" });
+  });
+
+  it("does not execute malformed tool calls returned by the provider", async () => {
+    mockRequestUrl(async () => ({ status: 200, json: { output: [{ type: "function_call", call_id: 7, name: null, arguments: "{}" }] }, text: "" }));
+    const log: unknown[] = [];
+    const tools = { defs: [], run: async (name: string, input: unknown) => { log.push([name, input]); return "done"; } };
+    await expect(sendChat(settings({ provider: "openai" }), "s", [], tools)).rejects.toThrow(/Invalid.*tool call/i);
+    expect(log).toEqual([]);
   });
 });
 

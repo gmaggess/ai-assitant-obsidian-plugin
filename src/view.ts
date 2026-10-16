@@ -7,6 +7,7 @@ import { SearchModal } from "./search";
 import { saveConversationNote } from "./export";
 import { ChatMessage, Scope, editModeOf } from "./types";
 import { ChangeRequest, EDIT_INSTRUCTIONS, VaultTools } from "./tools";
+import { errorMessage } from "./data";
 
 export const VIEW_TYPE = "ai-writer-assistant-view";
 
@@ -37,7 +38,7 @@ export class ChatView extends ItemView {
     this.chatScope = plugin.settings.defaultScope;
   }
   getViewType() { return VIEW_TYPE; }
-  getDisplayText() { return "AI-Writer Assistant"; }
+  getDisplayText() { return this.plugin.manifest.name; }
   getIcon() { return "message-square"; }
 
   async onOpen() { this.render(); this.registerEvent(this.app.workspace.on("file-open", () => this.updateScopeInfo())); }
@@ -102,7 +103,7 @@ export class ChatView extends ItemView {
       const file = await saveConversationNote(this.app, c, this.plugin.settings.notesFolder);
       new Notice(`Saved to ${file.path}`);
       await this.app.workspace.getLeaf("tab").openFile(file);
-    } catch (e: any) { new Notice(`Couldn't save note: ${e?.message ?? e}`); }
+    } catch (e) { new Notice(`Couldn't save note: ${errorMessage(e)}`); }
   }
 
   private askApproval(c: ChangeRequest, before: HTMLElement): Promise<boolean> {
@@ -172,7 +173,7 @@ export class ChatView extends ItemView {
     try {
       const s = this.plugin.settings;
       const ctx = await buildContext(this.app, this.chatScope, s.includeSubfolders, s.maxContextChars, this.chatScope === "folder" ? this.chatFolder : undefined);
-      if (ctx.truncated) new Notice("Context was truncated to fit Max context characters.");
+      if (ctx.truncated) new Notice("Context was truncated to fit max context characters.");
       const tools = editModeOf(s) === "off" ? undefined : new VaultTools(this.app, () => editModeOf(this.plugin.settings), (c) => this.askApproval(c, pending));
       const system = `${s.systemPrompt}${tools ? EDIT_INSTRUCTIONS : ""}\n\nScope: ${ctx.label} (${ctx.files.length} note(s)${ctx.truncated ? ", truncated" : ""})\n\n<context>\n${ctx.text}</context>`;
       let reply = await Promise.race([sendChat(s, system, this.messages, tools), stopPromise]);
@@ -188,10 +189,10 @@ export class ChatView extends ItemView {
       await this.plugin.history.upsert(conv);
       pending.empty();
       await MarkdownRenderer.render(this.app, reply, pending, "", this);
-    } catch (e: any) {
+    } catch (e) {
       this.messages.pop();
       if (stopped) { pending.setText("Stopped."); pending.addClass("sac-scope-info"); }
-      else { pending.addClass("error"); pending.setText(e?.message ?? String(e)); }
+      else { pending.addClass("error"); pending.setText(errorMessage(e)); }
     } finally {
       this.busy = false;
       this.cancel = null;

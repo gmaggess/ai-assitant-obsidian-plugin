@@ -2,6 +2,7 @@ import { App, MarkdownRenderer, Modal, Notice, Component } from "obsidian";
 import type AIWriterAssistantPlugin from "./main";
 import { Conversation } from "./history";
 import { sendChat } from "./providers";
+import { errorMessage, parseJson, recordOf, recordsOf } from "./data";
 
 interface SearchResult { summary: string; matches: { id: string; reason: string }[]; }
 
@@ -17,12 +18,12 @@ function digest(c: Conversation): string {
 function parseResult(text: string, valid: Set<string>): SearchResult {
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("The model didn't return a readable result. Try again.");
-  const raw = JSON.parse(m[0]);
+  const raw = recordOf(parseJson(m[0]));
   return {
-    summary: String(raw.summary ?? ""),
-    matches: (Array.isArray(raw.matches) ? raw.matches : [])
-      .filter((x: any) => valid.has(String(x?.id)))
-      .map((x: any) => ({ id: String(x.id), reason: String(x.reason ?? "") })),
+    summary: typeof raw.summary === "string" ? raw.summary : "",
+    matches: recordsOf(raw.matches)
+      .filter((x) => typeof x.id === "string" && valid.has(x.id))
+      .map((x) => ({ id: String(x.id), reason: typeof x.reason === "string" ? x.reason : "" })),
   };
 }
 
@@ -50,7 +51,7 @@ export class SearchModal extends Modal {
     const { contentEl } = this;
     this.titleEl.setText("Search past conversations");
     const row = contentEl.createDiv("sac-input-row");
-    const input = row.createEl("input", { type: "text", attr: { placeholder: "e.g. what did I decide about the Q3 reading list?", style: "flex:1" } });
+    const input = row.createEl("input", { type: "text", cls: "sac-search-input", attr: { placeholder: "Search your past conversations" } });
     const btn = row.createEl("button", { text: "Search", cls: "mod-cta" });
     const out = contentEl.createDiv({ cls: "sac-search-out" });
     contentEl.createDiv({ cls: "sac-scope-info", text: `${this.plugin.history.all().length} saved conversation(s). Uses your selected provider and model.` });
@@ -74,9 +75,9 @@ export class SearchModal extends Modal {
           card.createDiv({ text: m.reason });
           card.onclick = async () => { this.close(); await this.plugin.openConversation(c.id); };
         }
-      } catch (e: any) {
+      } catch (e) {
         out.empty();
-        out.createDiv({ cls: "sac-msg error", text: e?.message ?? String(e) });
+        out.createDiv({ cls: "sac-msg error", text: errorMessage(e) });
         new Notice("Search failed");
       } finally { btn.disabled = false; }
     };

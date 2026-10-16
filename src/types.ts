@@ -6,7 +6,7 @@ export type AnthropicEffortMode = "effort" | "thinking-budget" | "none";
 export type EditMode = "ask" | "auto" | "off";
 
 export interface ToolDef { name: string; description: string; schema: Record<string, unknown>; }
-export interface ToolHost { defs: ToolDef[]; run(name: string, input: any): Promise<string>; }
+export interface ToolHost { defs: ToolDef[]; run(name: string, input: unknown): Promise<string>; }
 
 export interface ChatMessage { role: "user" | "assistant"; content: string; }
 
@@ -55,4 +55,35 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 
 export function editModeOf(s: Pick<PluginSettings, "allowEdits" | "requireApproval">): EditMode {
   return !s.allowEdits ? "off" : s.requireApproval ? "ask" : "auto";
+}
+import { arrayOf, recordOf } from "./data";
+
+
+export function loadSettings(value: unknown): PluginSettings {
+  const raw = recordOf(value);
+  const defaults = DEFAULT_SETTINGS;
+  const text = (key: keyof PluginSettings) => typeof raw[key] === "string" ? raw[key] : defaults[key];
+  const number = (key: "maxContextChars" | "maxOutputTokens" | "maxToolRounds") => {
+    const n = raw[key];
+    return typeof n === "number" && Number.isSafeInteger(n) && n > 0 && (key !== "maxToolRounds" || n <= 200) ? n : defaults[key];
+  };
+  const list = (key: "anthropicModels" | "openaiModels") => Array.isArray(raw[key])
+    ? arrayOf(raw[key]).filter((v): v is string => typeof v === "string") : [...defaults[key]];
+  const result = { ...defaults, anthropicModels: list("anthropicModels"), openaiModels: list("openaiModels") };
+  for (const key of ["anthropicApiKey", "openaiApiKey", "anthropicModel", "openaiModel", "systemPrompt", "notesFolder"] as const) {
+    const candidate = text(key);
+    if (typeof candidate === "string") result[key] = candidate;
+  }
+  for (const key of ["allowEdits", "requireApproval", "includeSubfolders"] as const) {
+    const candidate = raw[key];
+    if (typeof candidate === "boolean") result[key] = candidate;
+  }
+  result.maxContextChars = number("maxContextChars");
+  result.maxOutputTokens = number("maxOutputTokens");
+  result.maxToolRounds = number("maxToolRounds");
+  if (raw.provider === "anthropic" || raw.provider === "openai") result.provider = raw.provider;
+  if (raw.defaultScope === "file" || raw.defaultScope === "folder" || raw.defaultScope === "vault") result.defaultScope = raw.defaultScope;
+  if (raw.anthropicEffortMode === "effort" || raw.anthropicEffortMode === "thinking-budget" || raw.anthropicEffortMode === "none") result.anthropicEffortMode = raw.anthropicEffortMode;
+  if (raw.effort === "low" || raw.effort === "medium" || raw.effort === "high" || raw.effort === "xhigh" || raw.effort === "max") result.effort = raw.effort;
+  return result;
 }
