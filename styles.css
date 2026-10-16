@@ -1,28 +1,32 @@
-.sac-view { display: flex; flex-direction: column; height: 100%; padding: 8px; gap: 8px; }
+.sac-view { font-family: var(--font-interface); font-size: var(--font-ui-small); line-height: 1.5; display: flex; flex-direction: column; height: 100%; padding: 8px; gap: 8px; }
 .sac-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .sac-toolbar select { max-width: 100%; min-width: 0; }
-.sac-model-picker { position: relative; flex: 1 1 100%; min-width: 0; }
-.sac-model-trigger { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); cursor: pointer; list-style: none; }
-.sac-model-trigger::-webkit-details-marker { display: none; }
-.sac-model-trigger:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
-.sac-model-selection { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sac-model-chevron { display: flex; flex: 0 0 16px; }
-.sac-model-chevron svg { width: 16px; height: 16px; }
-.sac-model-menu { position: absolute; z-index: 20; top: calc(100% + 4px); inset-inline: 0; padding: 10px; display: flex; flex-direction: column; gap: 10px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 6px; box-shadow: var(--shadow-s); }
-.sac-model-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--font-ui-small); color: var(--text-muted); }
-.sac-model-field select { width: 100%; color: var(--text-normal); }
 .sac-actions { display: flex; gap: 4px; margin-inline-start: auto; }
 .sac-icon-button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 6px; flex: 0 0 32px; }
 .sac-icon-button svg { width: 18px; height: 18px; }
 .sac-scope-info { font-size: var(--font-ui-smaller); color: var(--text-muted); }
 .sac-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.sac-msg { padding: 8px 10px; border-radius: 8px; user-select: text; }
+.sac-msg { padding: 8px 10px; border-radius: 8px; user-select: text; font-family: var(--font-interface); font-size: var(--font-ui-small); }
+.sac-msg p { margin: 0 0 0.6em; }
+.sac-msg p:last-child { margin-bottom: 0; }
+.sac-msg pre, .sac-msg code { font-family: var(--font-monospace); font-size: 0.9em; }
+.sac-msg h1, .sac-msg h2, .sac-msg h3, .sac-msg h4 { font-size: var(--font-ui-medium); margin: 0.6em 0 0.3em; }
 .sac-msg.user { background: var(--background-modifier-hover); align-self: flex-end; max-width: 90%; white-space: pre-wrap; }
 .sac-msg.assistant { background: var(--background-secondary); }
 .sac-msg.error { color: var(--text-error); border: 1px solid var(--text-error); }
 .sac-input-row { display: flex; gap: 6px; }
-.sac-input-row textarea { flex: 1; min-height: 60px; resize: vertical; }
+.sac-input-row textarea { font-family: var(--font-interface); font-size: var(--font-ui-small); flex: 1; min-height: 60px; resize: vertical; }
 .sac-search-out { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; max-height: 60vh; overflow-y: auto; }
 .sac-result { padding: 8px 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; }
 .sac-result:hover { background: var(--background-modifier-hover); }
 .sac-result-title { font-weight: 600; }
+.sac-icon-button.is-active { color: var(--interactive-accent); }
+.sac-support { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--background-modifier-border); font-size: var(--font-ui-smaller); color: var(--text-faint); text-align: center; }
+.sac-support a { color: var(--text-muted); text-decoration: none; }
+.sac-support a:hover { color: var(--text-normal); text-decoration: underline; }
+.sac-change { border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.sac-change-title { font-weight: 600; word-break: break-all; }
+.sac-diff { margin: 0; max-height: 200px; overflow: auto; font-family: var(--font-monospace); font-size: var(--font-ui-smaller); white-space: pre-wrap; }
+.sac-diff-del { background: rgba(var(--color-red-rgb), 0.15); padding: 2px 4px; }
+.sac-diff-add { background: rgba(var(--color-green-rgb), 0.15); padding: 2px 4px; }
+.sac-change-actions { display: flex; gap: 6px; }

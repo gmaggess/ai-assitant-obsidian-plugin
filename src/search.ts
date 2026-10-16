@@ -1,5 +1,5 @@
 import { App, MarkdownRenderer, Modal, Notice, Component } from "obsidian";
-import type ScopedAIChatPlugin from "./main";
+import type AIWriterAssistantPlugin from "./main";
 import { Conversation } from "./history";
 import { sendChat } from "./providers";
 
@@ -26,7 +26,7 @@ function parseResult(text: string, valid: Set<string>): SearchResult {
   };
 }
 
-export async function searchHistory(plugin: ScopedAIChatPlugin, query: string): Promise<SearchResult> {
+export async function searchHistory(plugin: AIWriterAssistantPlugin, query: string): Promise<SearchResult> {
   const chats = plugin.history.all().slice(0, MAX_CANDIDATES);
   if (!chats.length) return { summary: "You don't have any saved conversations yet.", matches: [] };
   const system =
@@ -43,7 +43,7 @@ export async function searchHistory(plugin: ScopedAIChatPlugin, query: string): 
 
 export class SearchModal extends Modal {
   private comp = new Component();
-  constructor(app: App, private plugin: ScopedAIChatPlugin) { super(app); }
+  constructor(app: App, private plugin: AIWriterAssistantPlugin) { super(app); }
 
   onOpen() {
     this.comp.load();

@@ -20,16 +20,16 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
-  default: () => ScopedAIChatPlugin
+  default: () => AIWriterAssistantPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/view.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/context.ts
-async function buildContext(app, scope, includeSubfolders, maxChars) {
+async function buildContext(app, scope, includeSubfolders, maxChars, folderPath) {
   const active = app.workspace.getActiveFile();
   let files = [];
   let label = "";
@@ -38,7 +38,7 @@ async function buildContext(app, scope, includeSubfolders, maxChars) {
     files = [active];
     label = `File: ${active.path}`;
   } else if (scope === "folder") {
-    const folder = active?.parent ?? app.vault.getRoot();
+    const folder = folderPath !== void 0 ? app.vault.getFolderByPath?.(folderPath) ?? app.vault.getRoot() : active?.parent ?? app.vault.getRoot();
     const path = folder?.path ?? "/";
     files = app.vault.getMarkdownFiles().filter((f) => {
       const parent = f.parent?.path ?? "/";
@@ -73,67 +73,134 @@ ${body}
 
 // src/providers.ts
 var import_obsidian = require("obsidian");
+var ADAPTIVE_ONLY = /* @__PURE__ */ new Set();
 var THINKING_BUDGET = { low: 2048, medium: 6e3, high: 16e3, xhigh: 24e3, max: 32e3 };
 function errMsg(status, body) {
   const m = body?.error?.message ?? body?.message ?? JSON.stringify(body);
   return `API error ${status}: ${m}`;
 }
-async function sendChat(s, system, messages) {
-  return s.provider === "anthropic" ? sendAnthropic(s, system, messages) : sendOpenAI(s, system, messages);
+async function sendChat(s, system, messages, tools) {
+  return s.provider === "anthropic" ? sendAnthropic(s, system, messages, tools) : sendOpenAI(s, system, messages, tools);
 }
-async function sendAnthropic(s, system, messages) {
+async function sendAnthropic(s, system, messages, tools) {
   if (!s.anthropicApiKey) throw new Error("Add your Anthropic API key in plugin settings.");
-  const body = { model: s.anthropicModel, max_tokens: s.maxOutputTokens, system, messages };
-  if (s.anthropicEffortMode === "effort") {
+  const msgs = [...messages];
+  const body = { model: s.anthropicModel, max_tokens: s.maxOutputTokens, system, messages: msgs };
+  if (tools) body.tools = tools.defs.map((d) => ({ name: d.name, description: d.description, input_schema: d.schema }));
+  const useAdaptive = () => {
+    body.thinking = { type: "adaptive" };
+    body.output_config = { effort: s.effort };
+  };
+  if (s.anthropicEffortMode === "thinking-budget" && ADAPTIVE_ONLY.has(s.anthropicModel)) {
+    useAdaptive();
+  } else if (s.anthropicEffortMode === "effort") {
     body.output_config = { effort: s.effort };
   } else if (s.anthropicEffortMode === "thinking-budget") {
     const budget = Math.min(THINKING_BUDGET[s.effort], Math.max(1024, s.maxOutputTokens - 1024));
     body.thinking = { type: "enabled", budget_tokens: budget };
     if (body.max_tokens <= budget) body.max_tokens = budget + 2048;
   }
-  const res = await (0, import_obsidian.requestUrl)({
-    url: "https://api.anthropic.com/v1/messages",
-    method: "POST",
-    throw: false,
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": s.anthropicApiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true"
-    },
-    body: JSON.stringify(body)
-  });
-  if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-  const data = res.json;
-  if (data.stop_reason === "refusal") return "_The model declined to answer this request._";
-  return (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  const texts = [];
+  for (let round = 0; round < (s.maxToolRounds || 25); round++) {
+    const call = () => (0, import_obsidian.requestUrl)({
+      url: "https://api.anthropic.com/v1/messages",
+      method: "POST",
+      throw: false,
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": s.anthropicApiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify(body)
+    });
+    let res = await call();
+    if (res.status === 400 && body.thinking?.type === "enabled" && /thinking\.type\.enabled|adaptive/i.test(JSON.stringify(res.json))) {
+      ADAPTIVE_ONLY.add(s.anthropicModel);
+      useAdaptive();
+      res = await call();
+    }
+    if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
+    const data = res.json;
+    if (data.stop_reason === "refusal") return "_The model declined to answer this request._";
+    const content = data.content ?? [];
+    const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    if (text) texts.push(text);
+    const calls = content.filter((b) => b.type === "tool_use");
+    if (!tools || data.stop_reason !== "tool_use" || calls.length === 0) return texts.join("\n\n");
+    msgs.push({ role: "assistant", content });
+    const results = [];
+    for (const c of calls) {
+      let out;
+      try {
+        out = await tools.run(c.name, c.input);
+      } catch (e) {
+        out = `Error: ${e?.message ?? e}`;
+      }
+      results.push({ type: "tool_result", tool_use_id: c.id, content: out });
+    }
+    msgs.push({ role: "user", content: results });
+  }
+  texts.push("_(stopped after too many tool steps)_");
+  return texts.join("\n\n");
 }
-async function sendOpenAI(s, system, messages) {
+async function sendOpenAI(s, system, messages, tools) {
   if (!s.openaiApiKey) throw new Error("Add your OpenAI API key in plugin settings.");
   const effort = s.effort === "max" || s.effort === "xhigh" ? "high" : s.effort;
+  const input = messages.map((m) => ({ role: m.role, content: m.content }));
   const body = {
     model: s.openaiModel,
     instructions: system,
-    input: messages.map((m) => ({ role: m.role, content: m.content })),
+    input,
     max_output_tokens: s.maxOutputTokens,
     store: false,
     reasoning: { effort }
   };
-  let res = await post(s, body);
-  if (res.status === 400 && /reasoning/i.test(JSON.stringify(res.json))) {
-    delete body.reasoning;
-    res = await post(s, body);
+  if (tools) {
+    body.tools = tools.defs.map((d) => ({ type: "function", name: d.name, description: d.description, parameters: d.schema }));
+    body.include = ["reasoning.encrypted_content"];
   }
-  if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-  const data = res.json;
-  if (data.output_text) return data.output_text;
-  const out = [];
-  for (const item of data.output ?? []) {
-    if (item.type === "message") {
-      for (const c of item.content ?? []) if (c.type === "output_text") out.push(c.text);
+  const texts = [];
+  for (let round = 0; round < (s.maxToolRounds || 25); round++) {
+    let res = await post(s, body);
+    if (res.status === 400 && /reasoning/i.test(JSON.stringify(res.json))) {
+      delete body.reasoning;
+      delete body.include;
+      res = await post(s, body);
+    }
+    if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
+    const data = res.json;
+    const output = data.output ?? [];
+    const calls = output.filter((i) => i.type === "function_call");
+    if (!tools || calls.length === 0) {
+      const parts = [];
+      if (data.output_text) parts.push(data.output_text);
+      else for (const item of output) {
+        if (item.type === "message") {
+          for (const c of item.content ?? []) if (c.type === "output_text") parts.push(c.text);
+        }
+      }
+      if (parts.length) texts.push(parts.join("\n"));
+      return texts.join("\n\n") || "_(empty response \u2014 try raising Max output tokens)_";
+    }
+    for (const item of output) {
+      if (item.type === "message") {
+        for (const c of item.content ?? []) if (c.type === "output_text") texts.push(c.text);
+      }
+    }
+    input.push(...output);
+    for (const c of calls) {
+      let out;
+      try {
+        out = await tools.run(c.name, JSON.parse(c.arguments || "{}"));
+      } catch (e) {
+        out = `Error: ${e?.message ?? e}`;
+      }
+      input.push({ type: "function_call_output", call_id: c.call_id, output: out });
     }
   }
-  return out.join("\n") || "_(empty response \u2014 try raising Max output tokens)_";
+  texts.push("_(stopped after too many tool steps)_");
+  return texts.join("\n\n");
 }
 function post(s, body) {
   return (0, import_obsidian.requestUrl)({
@@ -344,14 +411,163 @@ async function saveConversationNote(app, c, folder) {
   return app.vault.create(path, conversationToMarkdown(c));
 }
 
+// src/types.ts
+var DEFAULT_SETTINGS = {
+  anthropicApiKey: "",
+  openaiApiKey: "",
+  provider: "anthropic",
+  anthropicModel: "claude-sonnet-4-5",
+  openaiModel: "gpt-5",
+  anthropicModels: ["claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-5"],
+  openaiModels: ["gpt-5", "gpt-5-mini", "gpt-5-nano"],
+  effort: "medium",
+  anthropicEffortMode: "thinking-budget",
+  defaultScope: "file",
+  includeSubfolders: false,
+  maxContextChars: 2e5,
+  maxOutputTokens: 8e3,
+  notesFolder: "AI Chats",
+  allowEdits: true,
+  requireApproval: true,
+  maxToolRounds: 25,
+  systemPrompt: "You are a helpful assistant inside the user's Obsidian vault. Answer ONLY using the notes provided in the context. If the answer is not in the provided notes, say so. Cite note paths when relevant."
+};
+function editModeOf(s) {
+  return !s.allowEdits ? "off" : s.requireApproval ? "ask" : "auto";
+}
+
+// src/tools.ts
+var import_obsidian4 = require("obsidian");
+var TOOL_DEFS = [
+  {
+    name: "read_note",
+    description: "Read the full current contents of a note in the vault.",
+    schema: { type: "object", properties: { path: { type: "string", description: "Vault-relative path, e.g. Projects/Plan.md" } }, required: ["path"] }
+  },
+  {
+    name: "edit_note",
+    description: "Replace one exact passage in an existing note. old_text must match the note exactly and occur once; include enough surrounding text to be unique.",
+    schema: {
+      type: "object",
+      properties: { path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" } },
+      required: ["path", "old_text", "new_text"]
+    }
+  },
+  {
+    name: "append_to_note",
+    description: "Add text to the end of an existing note.",
+    schema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] }
+  },
+  {
+    name: "create_note",
+    description: "Create a new note (and any missing folders). Fails if the note already exists.",
+    schema: { type: "object", properties: { path: { type: "string", description: "Vault-relative path ending in .md" }, content: { type: "string" } }, required: ["path", "content"] }
+  }
+];
+var EDIT_INSTRUCTIONS = "\n\nYou can read and modify notes in the vault with the provided tools. Only change notes when the user asks you to. Prefer edit_note with a small, unique old_text over rewriting whole notes. Paths are vault-relative. If the user declines a change, do not retry it; acknowledge it and move on.";
+function applyEdit(content, oldText, newText) {
+  if (!oldText) return { ok: false, error: "old_text is empty." };
+  const first = content.indexOf(oldText);
+  if (first === -1) return { ok: false, error: "old_text was not found in the note. Read the note again and copy the passage exactly." };
+  if (content.indexOf(oldText, first + oldText.length) !== -1) return { ok: false, error: "old_text occurs more than once. Include more surrounding text to make it unique." };
+  return { ok: true, content: content.slice(0, first) + newText + content.slice(first + oldText.length) };
+}
+function checkPath(path, configDir) {
+  if (typeof path !== "string" || !path.trim()) return "path is required.";
+  if (path.startsWith("/") || /^[a-zA-Z]:/.test(path)) return "path must be vault-relative.";
+  const parts = path.split(/[\\/]/);
+  if (parts.includes("..")) return "path must not contain '..'.";
+  if (parts[0] === configDir || parts[0] === ".obsidian") return "the vault configuration folder is off limits.";
+  return null;
+}
+var VaultTools = class {
+  constructor(app, mode, confirm2) {
+    this.app = app;
+    this.mode = mode;
+    this.confirm = confirm2;
+    this.defs = TOOL_DEFS;
+    this.modified = /* @__PURE__ */ new Set();
+  }
+  async run(name, input) {
+    const bad = checkPath(input?.path, this.app.vault.configDir);
+    if (bad) return `Error: ${bad}`;
+    const path = (0, import_obsidian4.normalizePath)(input.path);
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (name === "read_note") {
+      if (!(existing instanceof import_obsidian4.TFile)) return `Error: no note at ${path}.`;
+      return await this.app.vault.read(existing);
+    }
+    if (this.mode() === "off") return "Error: file editing is disabled in settings.";
+    if (name === "create_note") {
+      if (existing) return `Error: ${path} already exists. Use edit_note or append_to_note.`;
+      const content = String(input.content ?? "");
+      if (!await this.approve({ kind: "create", path, content })) return "The user declined this change.";
+      const slash = path.lastIndexOf("/");
+      if (slash > 0) await this.ensureFolder(path.slice(0, slash));
+      await this.app.vault.create(path, content);
+      this.modified.add(path);
+      return `Created ${path}.`;
+    }
+    if (name === "edit_note" || name === "append_to_note") {
+      if (!(existing instanceof import_obsidian4.TFile)) return `Error: no note at ${path}.`;
+      const current = await this.app.vault.read(existing);
+      let next;
+      let req;
+      if (name === "edit_note") {
+        const r = applyEdit(current, String(input.old_text ?? ""), String(input.new_text ?? ""));
+        if (!r.ok) return `Error: ${r.error}`;
+        next = r.content;
+        req = { kind: "edit", path, oldText: String(input.old_text), newText: String(input.new_text ?? "") };
+      } else {
+        const add = String(input.content ?? "");
+        next = current + (current.endsWith("\n") || !current ? "" : "\n") + add;
+        req = { kind: "append", path, content: add };
+      }
+      if (!await this.approve(req)) return "The user declined this change.";
+      await this.app.vault.modify(existing, next);
+      this.modified.add(path);
+      return `Updated ${path}.`;
+    }
+    return `Error: unknown tool ${name}.`;
+  }
+  async approve(c) {
+    return this.mode() === "auto" ? true : this.confirm(c);
+  }
+  async ensureFolder(folder) {
+    let acc = "";
+    for (const part of folder.split("/")) {
+      acc = acc ? `${acc}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(acc)) await this.app.vault.createFolder(acc);
+    }
+  }
+};
+
 // src/view.ts
-var VIEW_TYPE = "scoped-ai-chat-view";
-var ChatView = class extends import_obsidian4.ItemView {
+var VIEW_TYPE = "ai-writer-assistant-view";
+var FolderPickerModal = class extends import_obsidian5.FuzzySuggestModal {
+  constructor(app, onPick) {
+    super(app);
+    this.onPick = onPick;
+    this.setPlaceholder("Choose a folder for context\u2026");
+  }
+  getItems() {
+    return this.app.vault.getAllFolders(true);
+  }
+  getItemText(f) {
+    return f.isRoot() ? "/" : f.path;
+  }
+  onChooseItem(f) {
+    this.onPick(f);
+  }
+};
+var ChatView = class extends import_obsidian5.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
     this.messages = [];
     this.busy = false;
+    this.cancel = null;
+    this.declinePending = null;
     this.convId = null;
     this.convCreated = 0;
     this.chatScope = plugin.settings.defaultScope;
@@ -360,7 +576,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     return VIEW_TYPE;
   }
   getDisplayText() {
-    return "Scoped AI Chat";
+    return "AI-Writer Assistant";
   }
   getIcon() {
     return "message-square";
@@ -375,57 +591,11 @@ var ChatView = class extends import_obsidian4.ItemView {
     root.addClass("sac-view");
     const s = this.plugin.settings;
     const bar = root.createDiv("sac-toolbar");
-    const picker = bar.createEl("details", { cls: "sac-model-picker" });
-    const trigger = picker.createEl("summary", { cls: "sac-model-trigger", attr: { "aria-label": "Provider, model, and effort" } });
-    const selection = trigger.createSpan({ cls: "sac-model-selection" });
-    const chevron = trigger.createSpan({ cls: "sac-model-chevron" });
-    (0, import_obsidian4.setIcon)(chevron, "chevron-down");
-    const menu = picker.createDiv({ cls: "sac-model-menu" });
-    const field = (label) => {
-      const row2 = menu.createEl("label", { cls: "sac-model-field" });
-      row2.createSpan({ text: label });
-      return row2.createEl("select", { attr: { "aria-label": label } });
-    };
-    const provider = field("Provider");
-    [["anthropic", "Claude"], ["openai", "ChatGPT"]].forEach(([v, l]) => provider.createEl("option", { value: v, text: l }));
-    provider.value = s.provider;
-    const model = field("Model");
-    const updateSelection = () => {
-      const name = s.provider === "anthropic" ? "Claude" : "ChatGPT";
-      const current = s.provider === "anthropic" ? s.anthropicModel : s.openaiModel;
-      selection.setText(`${name} \xB7 ${current} \xB7 ${s.effort}`);
-      (0, import_obsidian4.setTooltip)(trigger, `${name} \xB7 ${current} \xB7 Effort: ${s.effort}`);
-    };
-    const fillModels = () => {
-      model.empty();
-      const list = s.provider === "anthropic" ? s.anthropicModels : s.openaiModels;
-      const current = s.provider === "anthropic" ? s.anthropicModel : s.openaiModel;
-      const all = list.includes(current) ? list : [current, ...list];
-      all.forEach((m) => model.createEl("option", { value: m, text: m }));
-      model.value = current;
-      updateSelection();
-    };
-    fillModels();
-    const effort = field("Effort");
-    ["low", "medium", "high", "xhigh", "max"].forEach((e) => effort.createEl("option", { value: e, text: e }));
-    effort.value = s.effort;
-    this.registerDomEvent(root.ownerDocument, "click", (event) => {
-      if (event.target instanceof Node && !picker.contains(event.target)) picker.open = false;
-    });
-    this.registerDomEvent(picker, "keydown", (event) => {
-      if (event.key === "Escape") {
-        picker.open = false;
-        trigger.focus();
-      }
-    });
-    const scope = bar.createEl("select", { attr: { "aria-label": "Scope" } });
-    [["file", "Scope: File"], ["folder", "Scope: Folder"], ["vault", "Scope: Vault"]].forEach(([v, l]) => scope.createEl("option", { value: v, text: l }));
-    scope.value = this.chatScope;
     const actions = bar.createDiv("sac-actions");
     const action = (icon, label) => {
       const button = actions.createEl("button", { cls: "clickable-icon sac-icon-button", attr: { "aria-label": label, type: "button" } });
-      (0, import_obsidian4.setIcon)(button, icon);
-      (0, import_obsidian4.setTooltip)(button, label);
+      (0, import_obsidian5.setIcon)(button, icon);
+      (0, import_obsidian5.setTooltip)(button, label);
       return button;
     };
     const clear = action("square-pen", "New chat");
@@ -433,33 +603,13 @@ var ChatView = class extends import_obsidian4.ItemView {
     search.onclick = () => new SearchModal(this.app, this.plugin).open();
     const saveNote = action("file-down", "Save as note");
     saveNote.onclick = () => this.saveAsNote();
-    this.scopeSelect = scope;
-    provider.onchange = async () => {
-      s.provider = provider.value;
-      fillModels();
-      await this.plugin.saveSettings();
-    };
-    model.onchange = async () => {
-      if (s.provider === "anthropic") s.anthropicModel = model.value;
-      else s.openaiModel = model.value;
-      updateSelection();
-      await this.plugin.saveSettings();
-    };
-    effort.onchange = async () => {
-      s.effort = effort.value;
-      updateSelection();
-      await this.plugin.saveSettings();
-    };
-    scope.onchange = () => {
-      this.chatScope = scope.value;
-      this.updateScopeInfo();
-    };
+    this.scopeButton = action("scan-search", "Scope");
+    this.scopeButton.onclick = (e) => this.showScopeMenu(e);
     clear.onclick = () => {
       this.messages = [];
       this.convId = null;
       this.messagesEl.empty();
     };
-    this.scopeInfoEl = root.createDiv("sac-scope-info");
     this.updateScopeInfo();
     this.messagesEl = root.createDiv("sac-messages");
     const row = root.createDiv("sac-input-row");
@@ -471,7 +621,10 @@ var ChatView = class extends import_obsidian4.ItemView {
       input.value = "";
       await this.ask(text, send);
     };
-    send.onclick = submit;
+    send.onclick = () => {
+      if (this.busy) this.cancel?.();
+      else submit();
+    };
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -486,55 +639,123 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.convCreated = c.createdAt;
     this.messages = [...c.messages];
     this.chatScope = c.scope;
-    this.scopeSelect.value = c.scope;
+    this.chatFolder = c.scope === "folder" ? c.folderPath : void 0;
     this.updateScopeInfo();
     this.messagesEl.empty();
     this.messagesEl.createDiv({ cls: "sac-scope-info", text: `Resumed chat from ${new Date(c.updatedAt).toLocaleString()} (${c.scopeLabel})` });
     for (const m of c.messages) {
       const el = this.messagesEl.createDiv({ cls: `sac-msg ${m.role}` });
       if (m.role === "user") el.setText(m.content);
-      else await import_obsidian4.MarkdownRenderer.render(this.app, m.content, el, "", this);
+      else await import_obsidian5.MarkdownRenderer.render(this.app, m.content, el, "", this);
     }
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
   async saveAsNote() {
     const c = this.convId ? this.plugin.history.get(this.convId) : void 0;
     if (!c || c.messages.length === 0) {
-      new import_obsidian4.Notice("Nothing to save yet \u2014 send a message first.");
+      new import_obsidian5.Notice("Nothing to save yet \u2014 send a message first.");
       return;
     }
     try {
       const file = await saveConversationNote(this.app, c, this.plugin.settings.notesFolder);
-      new import_obsidian4.Notice(`Saved to ${file.path}`);
+      new import_obsidian5.Notice(`Saved to ${file.path}`);
       await this.app.workspace.getLeaf("tab").openFile(file);
     } catch (e) {
-      new import_obsidian4.Notice(`Couldn't save note: ${e?.message ?? e}`);
+      new import_obsidian5.Notice(`Couldn't save note: ${e?.message ?? e}`);
     }
   }
+  askApproval(c, before) {
+    return new Promise((resolve) => {
+      const card = this.messagesEl.createDiv("sac-change");
+      this.messagesEl.insertBefore(card, before);
+      const verb = c.kind === "create" ? "Create" : c.kind === "append" ? "Append to" : "Edit";
+      card.createDiv({ cls: "sac-change-title", text: `${verb} ${c.path}` });
+      const diff = card.createEl("pre", { cls: "sac-diff" });
+      const clip = (t) => t.length > 1500 ? t.slice(0, 1500) + "\n\u2026" : t;
+      if (c.kind === "edit") {
+        diff.createDiv({ cls: "sac-diff-del", text: clip(c.oldText) });
+        diff.createDiv({ cls: "sac-diff-add", text: clip(c.newText) });
+      } else diff.createDiv({ cls: "sac-diff-add", text: clip(c.content) });
+      const row = card.createDiv("sac-change-actions");
+      const apply = row.createEl("button", { text: "Apply", cls: "mod-cta" });
+      const reject = row.createEl("button", { text: "Reject" });
+      const done = (ok) => {
+        this.declinePending = null;
+        row.remove();
+        card.createDiv({ cls: "sac-scope-info", text: ok ? "Applied" : "Rejected" });
+        resolve(ok);
+      };
+      apply.onclick = () => done(true);
+      reject.onclick = () => done(false);
+      this.declinePending = () => done(false);
+      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    });
+  }
+  showScopeMenu(e) {
+    const menu = new import_obsidian5.Menu();
+    const choose = (scope, title, icon, onPick) => menu.addItem((i) => i.setTitle(title).setIcon(icon).setChecked(this.chatScope === scope).onClick(onPick));
+    choose("file", "File", "file", () => {
+      this.chatScope = "file";
+      this.updateScopeInfo();
+    });
+    choose("folder", "Active note's folder", "folder", () => {
+      this.chatScope = "folder";
+      this.chatFolder = void 0;
+      this.updateScopeInfo();
+    });
+    menu.addItem((i) => i.setTitle("Choose folder\u2026").setIcon("folder-search").onClick(() => new FolderPickerModal(this.app, (f) => {
+      this.chatScope = "folder";
+      this.chatFolder = f.path;
+      this.updateScopeInfo();
+    }).open()));
+    choose("vault", "Vault", "vault", () => {
+      this.chatScope = "vault";
+      this.updateScopeInfo();
+    });
+    menu.showAtMouseEvent(e);
+  }
   updateScopeInfo() {
-    if (!this.scopeInfoEl) return;
+    if (!this.scopeButton) return;
     const active = this.app.workspace.getActiveFile();
-    const t = this.chatScope === "file" ? active?.path ?? "no file open" : this.chatScope === "folder" ? active?.parent?.path ?? "/" : `${this.app.vault.getMarkdownFiles().length} notes`;
-    this.scopeInfoEl.setText(`Context: ${this.chatScope} \u2014 ${t}`);
+    const t = this.chatScope === "file" ? active?.path ?? "no file open" : this.chatScope === "folder" ? this.chatFolder ?? active?.parent?.path ?? "/" : `${this.app.vault.getMarkdownFiles().length} notes`;
+    this.scopeButton.toggleClass("is-active", this.chatScope !== "file");
+    (0, import_obsidian5.setTooltip)(this.scopeButton, `Context: ${this.chatScope} \u2014 ${t}`);
   }
   async ask(text, sendBtn) {
     this.busy = true;
-    sendBtn.disabled = true;
+    sendBtn.setText("Stop");
+    sendBtn.removeClass("mod-cta");
+    sendBtn.addClass("mod-warning");
+    let stopped = false;
+    const stopPromise = new Promise((_, reject) => {
+      this.cancel = () => {
+        stopped = true;
+        this.declinePending?.();
+        reject(new Error("Stopped"));
+      };
+    });
+    stopPromise.catch(() => {
+    });
     this.messages.push({ role: "user", content: text });
     this.messagesEl.createDiv({ cls: "sac-msg user", text });
     const pending = this.messagesEl.createDiv({ cls: "sac-msg assistant", text: "Thinking\u2026" });
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     try {
       const s = this.plugin.settings;
-      const ctx = await buildContext(this.app, this.chatScope, s.includeSubfolders, s.maxContextChars);
-      if (ctx.truncated) new import_obsidian4.Notice("Context was truncated to fit Max context characters.");
-      const system = `${s.systemPrompt}
+      const ctx = await buildContext(this.app, this.chatScope, s.includeSubfolders, s.maxContextChars, this.chatScope === "folder" ? this.chatFolder : void 0);
+      if (ctx.truncated) new import_obsidian5.Notice("Context was truncated to fit Max context characters.");
+      const tools = editModeOf(s) === "off" ? void 0 : new VaultTools(this.app, () => editModeOf(this.plugin.settings), (c) => this.askApproval(c, pending));
+      const system = `${s.systemPrompt}${tools ? EDIT_INSTRUCTIONS : ""}
 
 Scope: ${ctx.label} (${ctx.files.length} note(s)${ctx.truncated ? ", truncated" : ""})
 
 <context>
 ${ctx.text}</context>`;
-      const reply = await sendChat(s, system, this.messages);
+      let reply = await Promise.race([sendChat(s, system, this.messages, tools), stopPromise]);
+      if (tools && tools.modified.size) reply += `
+
+---
+_Modified: ${[...tools.modified].map((p) => `[[${p}]]`).join(", ")}_`;
       this.messages.push({ role: "assistant", content: reply });
       if (!this.convId) {
         this.convId = newId();
@@ -544,6 +765,7 @@ ${ctx.text}</context>`;
         id: this.convId,
         title: this.messages[0].content.slice(0, 80),
         scope: this.chatScope,
+        folderPath: this.chatScope === "folder" ? this.chatFolder : void 0,
         scopeLabel: ctx.label,
         provider: s.provider,
         model: s.provider === "anthropic" ? s.anthropicModel : s.openaiModel,
@@ -554,27 +776,35 @@ ${ctx.text}</context>`;
       };
       await this.plugin.history.upsert(conv);
       pending.empty();
-      await import_obsidian4.MarkdownRenderer.render(this.app, reply, pending, "", this);
+      await import_obsidian5.MarkdownRenderer.render(this.app, reply, pending, "", this);
     } catch (e) {
       this.messages.pop();
-      pending.addClass("error");
-      pending.setText(e?.message ?? String(e));
+      if (stopped) {
+        pending.setText("Stopped.");
+        pending.addClass("sac-scope-info");
+      } else {
+        pending.addClass("error");
+        pending.setText(e?.message ?? String(e));
+      }
     } finally {
       this.busy = false;
-      sendBtn.disabled = false;
+      this.cancel = null;
+      sendBtn.setText("Send");
+      sendBtn.removeClass("mod-warning");
+      sendBtn.addClass("mod-cta");
       this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     }
   }
 };
 
 // src/settings.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/donation.ts
 var DONATION_URL = "https://account.venmo.com/u/gmaggess";
 
 // src/settings.ts
-var SettingsTab = class extends import_obsidian5.PluginSettingTab {
+var SettingsTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -584,20 +814,15 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
     const s = this.plugin.settings;
     const save = () => this.plugin.saveSettings();
     containerEl.empty();
-    const coffee = containerEl.createDiv({ attr: { style: "display:flex;justify-content:space-between;align-items:center;padding:12px;margin-bottom:12px;border-radius:8px;background:var(--background-secondary)" } });
-    coffee.createSpan({ text: "Enjoying Scoped AI Chat? Support its development \u2014 opens Venmo in a new tab." });
-    const a = coffee.createEl("a", { text: "\u2615 Buy me a coffee on Venmo", href: DONATION_URL, cls: "mod-cta" });
-    a.setAttr("target", "_blank");
-    a.setAttr("style", "padding:6px 12px;border-radius:6px;background:var(--interactive-accent);color:var(--text-on-accent);text-decoration:none;font-weight:600");
     containerEl.createEl("h3", { text: "API keys" });
-    new import_obsidian5.Setting(containerEl).setName("Anthropic API key").setDesc("console.anthropic.com \u2192 API keys").addText((t) => {
+    new import_obsidian6.Setting(containerEl).setName("Anthropic API key").setDesc("console.anthropic.com \u2192 API keys").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.anthropicApiKey).onChange(async (v) => {
         s.anthropicApiKey = v.trim();
         await save();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("OpenAI API key").setDesc("platform.openai.com \u2192 API keys").addText((t) => {
+    new import_obsidian6.Setting(containerEl).setName("OpenAI API key").setDesc("platform.openai.com \u2192 API keys").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.openaiApiKey).onChange(async (v) => {
         s.openaiApiKey = v.trim();
@@ -605,13 +830,13 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
       });
     });
     containerEl.createEl("h3", { text: "Model" });
-    new import_obsidian5.Setting(containerEl).setName("Default provider").addDropdown((d) => d.addOptions({ anthropic: "Claude", openai: "ChatGPT" }).setValue(s.provider).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Provider").addDropdown((d) => d.addOptions({ anthropic: "Claude", openai: "ChatGPT" }).setValue(s.provider).onChange(async (v) => {
       s.provider = v;
       await save();
     }));
     for (const p of ["anthropic", "openai"]) {
       const label = p === "anthropic" ? "Claude" : "ChatGPT";
-      new import_obsidian5.Setting(containerEl).setName(`${label} model`).setDesc("Pick from the list, or type any model ID.").addDropdown((d) => {
+      new import_obsidian6.Setting(containerEl).setName(`${label} model`).setDesc("Pick from the list, or type any model ID.").addDropdown((d) => {
         const list = p === "anthropic" ? s.anthropicModels : s.openaiModels;
         list.forEach((m) => d.addOption(m, m));
         d.setValue(p === "anthropic" ? s.anthropicModel : s.openaiModel).onChange(async (v) => {
@@ -631,22 +856,22 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
           if (p === "anthropic") s.anthropicModels = models;
           else s.openaiModels = models;
           await save();
-          new import_obsidian5.Notice(`Loaded ${models.length} ${label} models`);
+          new import_obsidian6.Notice(`Loaded ${models.length} ${label} models`);
           this.display();
         } catch (e) {
-          new import_obsidian5.Notice(e.message ?? String(e));
+          new import_obsidian6.Notice(e.message ?? String(e));
         }
       }));
     }
-    new import_obsidian5.Setting(containerEl).setName("Effort level").setDesc("How hard the model thinks. OpenAI caps at high.").addDropdown((d) => d.addOptions({ low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" }).setValue(s.effort).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Effort level").setDesc("How hard the model thinks. OpenAI caps at high.").addDropdown((d) => d.addOptions({ low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" }).setValue(s.effort).onChange(async (v) => {
       s.effort = v;
       await save();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Claude effort method").setDesc("'Effort' uses the newer effort parameter; 'Thinking budget' uses extended thinking tokens (widest model support).").addDropdown((d) => d.addOptions({ effort: "Effort parameter", "thinking-budget": "Thinking budget", none: "Off" }).setValue(s.anthropicEffortMode).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Claude effort method").setDesc("'Effort' uses the newer effort parameter; 'Thinking budget' uses extended thinking tokens (widest model support).").addDropdown((d) => d.addOptions({ effort: "Effort parameter", "thinking-budget": "Thinking budget", none: "Off" }).setValue(s.anthropicEffortMode).onChange(async (v) => {
       s.anthropicEffortMode = v;
       await save();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Max output tokens").addText((t) => t.setValue(String(s.maxOutputTokens)).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Max output tokens").addText((t) => t.setValue(String(s.maxOutputTokens)).onChange(async (v) => {
       const n = parseInt(v);
       if (n > 0) {
         s.maxOutputTokens = n;
@@ -654,69 +879,74 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
       }
     }));
     containerEl.createEl("h3", { text: "Scope" });
-    new import_obsidian5.Setting(containerEl).setName("Default scope").setDesc("Can be changed per chat in the chat panel.").addDropdown((d) => d.addOptions({ file: "Current file", folder: "Current folder", vault: "Whole vault" }).setValue(s.defaultScope).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Default scope").setDesc("Can be changed per chat in the chat panel.").addDropdown((d) => d.addOptions({ file: "Current file", folder: "Current folder", vault: "Whole vault" }).setValue(s.defaultScope).onChange(async (v) => {
       s.defaultScope = v;
       await save();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Folder scope includes subfolders").addToggle((t) => t.setValue(s.includeSubfolders).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Folder scope includes subfolders").addToggle((t) => t.setValue(s.includeSubfolders).onChange(async (v) => {
       s.includeSubfolders = v;
       await save();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Max context characters").setDesc("Notes beyond this limit are dropped (active note always first).").addText((t) => t.setValue(String(s.maxContextChars)).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Max context characters").setDesc("Notes beyond this limit are dropped (active note always first).").addText((t) => t.setValue(String(s.maxContextChars)).onChange(async (v) => {
       const n = parseInt(v);
       if (n > 0) {
         s.maxContextChars = n;
         await save();
       }
     }));
+    containerEl.createEl("h3", { text: "File editing" });
+    new import_obsidian6.Setting(containerEl).setName("Let the AI modify notes").setDesc("Allow the assistant to create and edit notes in your vault. Turn off for a read-only chat.").addToggle((t) => t.setValue(s.allowEdits).onChange(async (v) => {
+      s.allowEdits = v;
+      await save();
+      this.display();
+    }));
+    if (s.allowEdits) {
+      new import_obsidian6.Setting(containerEl).setName("Require approval for changes").setDesc("Show a preview and wait for Apply before anything is written. Turn off to apply changes immediately.").addToggle((t) => t.setValue(s.requireApproval).onChange(async (v) => {
+        s.requireApproval = v;
+        await save();
+      }));
+      new import_obsidian6.Setting(containerEl).setName("Max tool steps per request").setDesc("Safety cap on how many read/edit steps the AI can take before it must stop. Raise it for bulk edits.").addText((t) => t.setValue(String(s.maxToolRounds)).onChange(async (v) => {
+        const n = parseInt(v);
+        if (n > 0 && n <= 200) {
+          s.maxToolRounds = n;
+          await save();
+        }
+      }));
+    }
     containerEl.createEl("h3", { text: "Conversation history" });
-    new import_obsidian5.Setting(containerEl).setName("Save-as-note folder").setDesc('Where "Save as note" puts conversations in your vault.').addText((t) => t.setPlaceholder("AI Chats").setValue(s.notesFolder).onChange(async (v) => {
+    new import_obsidian6.Setting(containerEl).setName("Save-as-note folder").setDesc('Where "Save as note" puts conversations in your vault.').addText((t) => t.setPlaceholder("AI Chats").setValue(s.notesFolder).onChange(async (v) => {
       s.notesFolder = v;
       await save();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Saved conversations").setDesc(`${this.plugin.history.all().length} chat(s) stored privately with the plugin. Search them with the "Search history" button.`).addButton((b) => b.setButtonText("Delete all").setWarning().onClick(async () => {
+    new import_obsidian6.Setting(containerEl).setName("Saved conversations").setDesc(`${this.plugin.history.all().length} chat(s) stored privately with the plugin. Search them with the "Search history" button.`).addButton((b) => b.setButtonText("Delete all").setWarning().onClick(async () => {
       if (!confirm("Delete all saved conversations?")) return;
       await this.plugin.history.clear();
-      new import_obsidian5.Notice("History cleared");
+      new import_obsidian6.Notice("History cleared");
       this.display();
     }));
-    new import_obsidian5.Setting(containerEl).setName("System prompt").addTextArea((t) => {
+    new import_obsidian6.Setting(containerEl).setName("System prompt").addTextArea((t) => {
       t.inputEl.rows = 5;
       t.setValue(s.systemPrompt).onChange(async (v) => {
         s.systemPrompt = v;
         await save();
       });
     });
+    const support = containerEl.createDiv("sac-support");
+    support.createSpan({ text: "Enjoying AI-Writer Assistant? " });
+    const a = support.createEl("a", { text: "\u2615 Buy me a coffee", href: DONATION_URL });
+    a.setAttr("target", "_blank");
+    a.setAttr("rel", "noopener");
   }
 };
 
-// src/types.ts
-var DEFAULT_SETTINGS = {
-  anthropicApiKey: "",
-  openaiApiKey: "",
-  provider: "anthropic",
-  anthropicModel: "claude-sonnet-4-5",
-  openaiModel: "gpt-5",
-  anthropicModels: ["claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-5"],
-  openaiModels: ["gpt-5", "gpt-5-mini", "gpt-5-nano"],
-  effort: "medium",
-  anthropicEffortMode: "thinking-budget",
-  defaultScope: "file",
-  includeSubfolders: false,
-  maxContextChars: 2e5,
-  maxOutputTokens: 8e3,
-  notesFolder: "AI Chats",
-  systemPrompt: "You are a helpful assistant inside the user's Obsidian vault. Answer ONLY using the notes provided in the context. If the answer is not in the provided notes, say so. Cite note paths when relevant."
-};
-
 // src/main.ts
-var ScopedAIChatPlugin = class extends import_obsidian6.Plugin {
+var AIWriterAssistantPlugin = class extends import_obsidian7.Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.history = new HistoryStore(this);
     await this.history.load();
     this.registerView(VIEW_TYPE, (leaf) => new ChatView(leaf, this));
-    this.addRibbonIcon("message-square", "Open Scoped AI Chat", () => this.activateView());
+    this.addRibbonIcon("message-square", "Open AI-Writer Assistant", () => this.activateView());
     this.addCommand({ id: "open-chat", name: "Open chat panel", callback: () => this.activateView() });
     this.addCommand({ id: "search-history", name: "Search past conversations", callback: () => new SearchModal(this.app, this).open() });
     this.addSettingTab(new SettingsTab(this.app, this));

@@ -1,2 +1,3 @@
 .claude/scratchpad-*.md
 .claude/spec-review-*.md
+node_modules/

@@ -3,6 +3,11 @@ export type Scope = "file" | "folder" | "vault";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type AnthropicEffortMode = "effort" | "thinking-budget" | "none";
 
+export type EditMode = "ask" | "auto" | "off";
+
+export interface ToolDef { name: string; description: string; schema: Record<string, unknown>; }
+export interface ToolHost { defs: ToolDef[]; run(name: string, input: any): Promise<string>; }
+
 export interface ChatMessage { role: "user" | "assistant"; content: string; }
 
 export interface PluginSettings {
@@ -21,6 +26,9 @@ export interface PluginSettings {
   maxOutputTokens: number;
   systemPrompt: string;
   notesFolder: string;
+  allowEdits: boolean;
+  requireApproval: boolean;
+  maxToolRounds: number;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -38,6 +46,13 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   maxContextChars: 200000,
   maxOutputTokens: 8000,
   notesFolder: "AI Chats",
+  allowEdits: true,
+  requireApproval: true,
+  maxToolRounds: 25,
   systemPrompt:
     "You are a helpful assistant inside the user's Obsidian vault. Answer ONLY using the notes provided in the context. If the answer is not in the provided notes, say so. Cite note paths when relevant.",
 };
+
+export function editModeOf(s: Pick<PluginSettings, "allowEdits" | "requireApproval">): EditMode {
+  return !s.allowEdits ? "off" : s.requireApproval ? "ask" : "auto";
+}

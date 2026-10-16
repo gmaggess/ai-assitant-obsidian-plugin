@@ -1,13 +1,14 @@
 {
-  "name": "scoped-ai-chat",
-  "version": "0.1.0",
+  "name": "ai-writer-assistant",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "npm run build && npm run test"
+    "verify": "npm run build && npm run test",
+    "publish:vault": "npm run verify && node scripts/publish.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

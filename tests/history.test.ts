@@ -6,7 +6,7 @@ import { ChatMessage } from "../src/types";
 function fakePlugin() {
   const files = new Map<string, string>();
   return {
-    manifest: { dir: "/plugins/scoped-ai-chat" },
+    manifest: { dir: "/plugins/ai-writer-assistant" },
     app: {
       vault: {
         adapter: {
@@ -77,7 +77,7 @@ describe("HistoryStore", () => {
 
   it("survives a corrupted history file", async () => {
     const plugin = fakePlugin();
-    plugin._files.set("/plugins/scoped-ai-chat/history.json", "{not json");
+    plugin._files.set("/plugins/ai-writer-assistant/history.json", "{not json");
     const store = new HistoryStore(plugin);
     await expect(store.load()).resolves.toBeUndefined();
     expect(store.all()).toEqual([]);

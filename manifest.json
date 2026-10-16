@@ -1,9 +1,10 @@
 {
-  "id": "scoped-ai-chat",
-  "name": "Scoped AI Chat",
-  "version": "0.1.0",
+  "id": "ai-writer-assistant",
+  "name": "AI-Writer Assistant",
+  "version": "1.0.0",
   "minAppVersion": "1.4.0",
-  "description": "Chat with Claude or ChatGPT about the current file, folder, or entire vault.",
+  "description": "Chat with Claude or ChatGPT about your current note, folder or vault, and let it draft and edit notes with your approval.",
   "author": "George Maggessy",
-  "isDesktopOnly": false
+  "isDesktopOnly": false,
+  "authorUrl": "https://github.com/gmaggess"
 }

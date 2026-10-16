@@ -147,3 +147,63 @@ describe("fetchModels", () => {
     await expect(fetchModels(settings(), "anthropic")).rejects.toThrow(/403/);
   });
 });
+
+describe("sendChat — tool loops", () => {
+  beforeEach(() => resetRequestUrlCalls());
+  const host = (log: any[]) => ({
+    defs: [{ name: "edit_note", description: "d", schema: { type: "object" } }],
+    run: async (name: string, input: any) => { log.push([name, input]); return "done"; },
+  });
+
+  it("Anthropic: runs a tool_use round and returns the final text", async () => {
+    let n = 0;
+    mockRequestUrl(async () => ++n === 1
+      ? { status: 200, json: { stop_reason: "tool_use", content: [{ type: "text", text: "On it." }, { type: "tool_use", id: "t1", name: "edit_note", input: { path: "a.md" } }] }, text: "" }
+      : { status: 200, json: { stop_reason: "end_turn", content: [{ type: "text", text: "Finished." }] }, text: "" });
+    const log: any[] = [];
+    const out = await sendChat(settings({ anthropicEffortMode: "none" }), "s", [{ role: "user", content: "q" }], host(log));
+    expect(out).toBe("On it.\n\nFinished.");
+    expect(log).toEqual([["edit_note", { path: "a.md" }]]);
+    const second = JSON.parse(getRequestUrlCalls()[1].body!);
+    expect(second.tools[0].input_schema).toBeDefined();
+    expect(second.messages[2].content[0]).toMatchObject({ type: "tool_result", tool_use_id: "t1", content: "done" });
+  });
+
+  it("OpenAI: answers function_call items with function_call_output", async () => {
+    let n = 0;
+    mockRequestUrl(async () => ++n === 1
+      ? { status: 200, json: { output: [{ type: "function_call", call_id: "c1", name: "edit_note", arguments: "{\"path\":\"a.md\"}" }] }, text: "" }
+      : { status: 200, json: { output_text: "All set" }, text: "" });
+    const log: any[] = [];
+    const out = await sendChat(settings({ provider: "openai" }), "s", [{ role: "user", content: "q" }], host(log));
+    expect(out).toBe("All set");
+    expect(log).toEqual([["edit_note", { path: "a.md" }]]);
+    const second = JSON.parse(getRequestUrlCalls()[1].body!);
+    expect(second.input.at(-1)).toEqual({ type: "function_call_output", call_id: "c1", output: "done" });
+  });
+});
+
+describe("sendChat — Anthropic adaptive thinking fallback", () => {
+  beforeEach(() => resetRequestUrlCalls());
+
+  it("retries with adaptive thinking + effort when the model rejects a thinking budget", async () => {
+    mockRequestUrl(async (opts) => {
+      const body = JSON.parse(opts.body!);
+      if (body.thinking?.type === "enabled")
+        return { status: 400, json: { error: { message: '"thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive"' } }, text: "" };
+      return { status: 200, json: { content: [{ type: "text", text: "ok" }] }, text: "" };
+    });
+    const s = settings({ anthropicModel: "claude-new-x", anthropicEffortMode: "thinking-budget", effort: "high" });
+    expect(await sendChat(s, "s", [])).toBe("ok");
+    const calls = getRequestUrlCalls();
+    expect(calls.length).toBe(2);
+    const retry = JSON.parse(calls[1].body!);
+    expect(retry.thinking).toEqual({ type: "adaptive" });
+    expect(retry.output_config).toEqual({ effort: "high" });
+    // Remembered: the next request goes straight to adaptive.
+    resetRequestUrlCalls();
+    await sendChat(s, "s", []);
+    expect(getRequestUrlCalls().length).toBe(1);
+    expect(JSON.parse(getRequestUrlCalls()[0].body!).thinking).toEqual({ type: "adaptive" });
+  });
+});

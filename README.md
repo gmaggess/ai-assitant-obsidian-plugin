@@ -1,11 +1,16 @@
-# Scoped AI Chat (Obsidian plugin)
+# AI-Writer Assistant (Obsidian plugin)
 
 Chat with Claude or ChatGPT about your notes, limited to the current **file**, **folder**, or **whole vault**.
 
+## Privacy and data
+- Your API keys are stored in the plugin's `data.json` inside your vault. Don't sync that file publicly.
+- When you send a message, the notes in the selected scope (file, folder or vault) are sent to the provider you chose (Anthropic or OpenAI). Nothing else leaves your vault, and there is no telemetry.
+- The assistant can create and edit notes. By default every change needs your approval; this can be changed in settings.
+
 ## Install
 1. `npm install && npm run build` (creates `main.js`)
-2. Copy `manifest.json`, `main.js`, `styles.css` into `<vault>/.obsidian/plugins/scoped-ai-chat/`
-3. Obsidian → Settings → Community plugins → enable **Scoped AI Chat**
+2. Copy `manifest.json`, `main.js`, `styles.css` into `<vault>/.obsidian/plugins/ai-writer-assistant/`
+3. Obsidian → Settings → Community plugins → enable **AI-Writer Assistant**
 4. Add your Anthropic and/or OpenAI API key in the plugin settings.
 
 ## Use

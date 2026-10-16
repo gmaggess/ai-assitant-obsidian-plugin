@@ -1,30 +1,43 @@
-import { ItemView, MarkdownRenderer, WorkspaceLeaf, Notice, setIcon, setTooltip } from "obsidian";
-import type ScopedAIChatPlugin from "./main";
+import { App, FuzzySuggestModal, ItemView, MarkdownRenderer, Menu, TFolder, WorkspaceLeaf, Notice, setIcon, setTooltip } from "obsidian";
+import type AIWriterAssistantPlugin from "./main";
 import { buildContext } from "./context";
 import { sendChat } from "./providers";
 import { newId, Conversation } from "./history";
 import { SearchModal } from "./search";
 import { saveConversationNote } from "./export";
-import { ChatMessage, Effort, Provider, Scope } from "./types";
+import { ChatMessage, Scope, editModeOf } from "./types";
+import { ChangeRequest, EDIT_INSTRUCTIONS, VaultTools } from "./tools";
 
-export const VIEW_TYPE = "scoped-ai-chat-view";
+export const VIEW_TYPE = "ai-writer-assistant-view";
+
+class FolderPickerModal extends FuzzySuggestModal<TFolder> {
+  constructor(app: App, private onPick: (folder: TFolder) => void) {
+    super(app);
+    this.setPlaceholder("Choose a folder for context…");
+  }
+  getItems() { return this.app.vault.getAllFolders(true); }
+  getItemText(f: TFolder) { return f.isRoot() ? "/" : f.path; }
+  onChooseItem(f: TFolder) { this.onPick(f); }
+}
 
 export class ChatView extends ItemView {
   private messages: ChatMessage[] = [];
   private chatScope: Scope;
   private messagesEl!: HTMLElement;
-  private scopeInfoEl!: HTMLElement;
   private busy = false;
+  private cancel: (() => void) | null = null;
+  private declinePending: (() => void) | null = null;
   private convId: string | null = null;
   private convCreated = 0;
-  private scopeSelect!: HTMLSelectElement;
+  private chatFolder: string | undefined;
+  private scopeButton!: HTMLButtonElement;
 
-  constructor(leaf: WorkspaceLeaf, private plugin: ScopedAIChatPlugin) {
+  constructor(leaf: WorkspaceLeaf, private plugin: AIWriterAssistantPlugin) {
     super(leaf);
     this.chatScope = plugin.settings.defaultScope;
   }
   getViewType() { return VIEW_TYPE; }
-  getDisplayText() { return "Scoped AI Chat"; }
+  getDisplayText() { return "AI-Writer Assistant"; }
   getIcon() { return "message-square"; }
 
   async onOpen() { this.render(); this.registerEvent(this.app.workspace.on("file-open", () => this.updateScopeInfo())); }
@@ -36,53 +49,6 @@ export class ChatView extends ItemView {
     const s = this.plugin.settings;
 
     const bar = root.createDiv("sac-toolbar");
-    const picker = bar.createEl("details", { cls: "sac-model-picker" });
-    const trigger = picker.createEl("summary", { cls: "sac-model-trigger", attr: { "aria-label": "Provider, model, and effort" } });
-    const selection = trigger.createSpan({ cls: "sac-model-selection" });
-    const chevron = trigger.createSpan({ cls: "sac-model-chevron" });
-    setIcon(chevron, "chevron-down");
-    const menu = picker.createDiv({ cls: "sac-model-menu" });
-    const field = (label: string) => {
-      const row = menu.createEl("label", { cls: "sac-model-field" });
-      row.createSpan({ text: label });
-      return row.createEl("select", { attr: { "aria-label": label } });
-    };
-    const provider = field("Provider");
-    [["anthropic", "Claude"], ["openai", "ChatGPT"]].forEach(([v, l]) => provider.createEl("option", { value: v, text: l }));
-    provider.value = s.provider;
-
-    const model = field("Model");
-    const updateSelection = () => {
-      const name = s.provider === "anthropic" ? "Claude" : "ChatGPT";
-      const current = s.provider === "anthropic" ? s.anthropicModel : s.openaiModel;
-      selection.setText(`${name} · ${current} · ${s.effort}`);
-      setTooltip(trigger, `${name} · ${current} · Effort: ${s.effort}`);
-    };
-    const fillModels = () => {
-      model.empty();
-      const list = s.provider === "anthropic" ? s.anthropicModels : s.openaiModels;
-      const current = s.provider === "anthropic" ? s.anthropicModel : s.openaiModel;
-      const all = list.includes(current) ? list : [current, ...list];
-      all.forEach((m) => model.createEl("option", { value: m, text: m }));
-      model.value = current;
-      updateSelection();
-    };
-    fillModels();
-
-    const effort = field("Effort");
-    (["low", "medium", "high", "xhigh", "max"] as Effort[]).forEach((e) => effort.createEl("option", { value: e, text: e }));
-    effort.value = s.effort;
-    this.registerDomEvent(root.ownerDocument, "click", (event) => {
-      if (event.target instanceof Node && !picker.contains(event.target)) picker.open = false;
-    });
-    this.registerDomEvent(picker, "keydown", (event) => {
-      if (event.key === "Escape") { picker.open = false; trigger.focus(); }
-    });
-
-    const scope = bar.createEl("select", { attr: { "aria-label": "Scope" } });
-    [["file", "Scope: File"], ["folder", "Scope: Folder"], ["vault", "Scope: Vault"]].forEach(([v, l]) => scope.createEl("option", { value: v, text: l }));
-    scope.value = this.chatScope;
-
     const actions = bar.createDiv("sac-actions");
     const action = (icon: string, label: string) => {
       const button = actions.createEl("button", { cls: "clickable-icon sac-icon-button", attr: { "aria-label": label, type: "button" } });
@@ -95,19 +61,10 @@ export class ChatView extends ItemView {
     search.onclick = () => new SearchModal(this.app, this.plugin).open();
     const saveNote = action("file-down", "Save as note");
     saveNote.onclick = () => this.saveAsNote();
-    this.scopeSelect = scope;
-
-    provider.onchange = async () => { s.provider = provider.value as Provider; fillModels(); await this.plugin.saveSettings(); };
-    model.onchange = async () => {
-      if (s.provider === "anthropic") s.anthropicModel = model.value; else s.openaiModel = model.value;
-      updateSelection();
-      await this.plugin.saveSettings();
-    };
-    effort.onchange = async () => { s.effort = effort.value as Effort; updateSelection(); await this.plugin.saveSettings(); };
-    scope.onchange = () => { this.chatScope = scope.value as Scope; this.updateScopeInfo(); };
+    this.scopeButton = action("scan-search", "Scope");
+    this.scopeButton.onclick = (e) => this.showScopeMenu(e);
     clear.onclick = () => { this.messages = []; this.convId = null; this.messagesEl.empty(); };
 
-    this.scopeInfoEl = root.createDiv("sac-scope-info");
     this.updateScopeInfo();
 
     this.messagesEl = root.createDiv("sac-messages");
@@ -121,7 +78,7 @@ export class ChatView extends ItemView {
       input.value = "";
       await this.ask(text, send);
     };
-    send.onclick = submit;
+    send.onclick = () => { if (this.busy) this.cancel?.(); else submit(); };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
   }
 
@@ -130,7 +87,7 @@ export class ChatView extends ItemView {
     if (!c) return;
     this.convId = c.id; this.convCreated = c.createdAt;
     this.messages = [...c.messages];
-    this.chatScope = c.scope; this.scopeSelect.value = c.scope; this.updateScopeInfo();
+    this.chatScope = c.scope; this.chatFolder = c.scope === "folder" ? c.folderPath : undefined; this.updateScopeInfo();
     this.messagesEl.empty();
     this.messagesEl.createDiv({ cls: "sac-scope-info", text: `Resumed chat from ${new Date(c.updatedAt).toLocaleString()} (${c.scopeLabel})` });
     for (const m of c.messages) {
@@ -150,32 +107,82 @@ export class ChatView extends ItemView {
     } catch (e: any) { new Notice(`Couldn't save note: ${e?.message ?? e}`); }
   }
 
+  private askApproval(c: ChangeRequest, before: HTMLElement): Promise<boolean> {
+    return new Promise((resolve) => {
+      const card = this.messagesEl.createDiv("sac-change");
+      this.messagesEl.insertBefore(card, before);
+      const verb = c.kind === "create" ? "Create" : c.kind === "append" ? "Append to" : "Edit";
+      card.createDiv({ cls: "sac-change-title", text: `${verb} ${c.path}` });
+      const diff = card.createEl("pre", { cls: "sac-diff" });
+      const clip = (t: string) => (t.length > 1500 ? t.slice(0, 1500) + "\n…" : t);
+      if (c.kind === "edit") {
+        diff.createDiv({ cls: "sac-diff-del", text: clip(c.oldText) });
+        diff.createDiv({ cls: "sac-diff-add", text: clip(c.newText) });
+      } else diff.createDiv({ cls: "sac-diff-add", text: clip(c.content) });
+      const row = card.createDiv("sac-change-actions");
+      const apply = row.createEl("button", { text: "Apply", cls: "mod-cta" });
+      const reject = row.createEl("button", { text: "Reject" });
+      const done = (ok: boolean) => {
+        this.declinePending = null;
+        row.remove();
+        card.createDiv({ cls: "sac-scope-info", text: ok ? "Applied" : "Rejected" });
+        resolve(ok);
+      };
+      apply.onclick = () => done(true);
+      reject.onclick = () => done(false);
+      this.declinePending = () => done(false);
+      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    });
+  }
+
+  private showScopeMenu(e: MouseEvent) {
+    const menu = new Menu();
+    const choose = (scope: Scope, title: string, icon: string, onPick: () => void) =>
+      menu.addItem((i) => i.setTitle(title).setIcon(icon).setChecked(this.chatScope === scope).onClick(onPick));
+    choose("file", "File", "file", () => { this.chatScope = "file"; this.updateScopeInfo(); });
+    choose("folder", "Active note's folder", "folder", () => { this.chatScope = "folder"; this.chatFolder = undefined; this.updateScopeInfo(); });
+    menu.addItem((i) => i.setTitle("Choose folder…").setIcon("folder-search").onClick(() =>
+      new FolderPickerModal(this.app, (f) => { this.chatScope = "folder"; this.chatFolder = f.path; this.updateScopeInfo(); }).open()));
+    choose("vault", "Vault", "vault", () => { this.chatScope = "vault"; this.updateScopeInfo(); });
+    menu.showAtMouseEvent(e);
+  }
+
   private updateScopeInfo() {
-    if (!this.scopeInfoEl) return;
+    if (!this.scopeButton) return;
     const active = this.app.workspace.getActiveFile();
     const t = this.chatScope === "file" ? (active?.path ?? "no file open")
-      : this.chatScope === "folder" ? (active?.parent?.path ?? "/")
+      : this.chatScope === "folder" ? (this.chatFolder ?? active?.parent?.path ?? "/")
       : `${this.app.vault.getMarkdownFiles().length} notes`;
-    this.scopeInfoEl.setText(`Context: ${this.chatScope} — ${t}`);
+    this.scopeButton.toggleClass("is-active", this.chatScope !== "file");
+    setTooltip(this.scopeButton, `Context: ${this.chatScope} — ${t}`);
   }
 
   private async ask(text: string, sendBtn: HTMLButtonElement) {
     this.busy = true;
-    sendBtn.disabled = true;
+    sendBtn.setText("Stop");
+    sendBtn.removeClass("mod-cta");
+    sendBtn.addClass("mod-warning");
+    let stopped = false;
+    const stopPromise = new Promise<never>((_, reject) => {
+      this.cancel = () => { stopped = true; this.declinePending?.(); reject(new Error("Stopped")); };
+    });
+    stopPromise.catch(() => {});
     this.messages.push({ role: "user", content: text });
     this.messagesEl.createDiv({ cls: "sac-msg user", text });
     const pending = this.messagesEl.createDiv({ cls: "sac-msg assistant", text: "Thinking…" });
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     try {
       const s = this.plugin.settings;
-      const ctx = await buildContext(this.app, this.chatScope, s.includeSubfolders, s.maxContextChars);
+      const ctx = await buildContext(this.app, this.chatScope, s.includeSubfolders, s.maxContextChars, this.chatScope === "folder" ? this.chatFolder : undefined);
       if (ctx.truncated) new Notice("Context was truncated to fit Max context characters.");
-      const system = `${s.systemPrompt}\n\nScope: ${ctx.label} (${ctx.files.length} note(s)${ctx.truncated ? ", truncated" : ""})\n\n<context>\n${ctx.text}</context>`;
-      const reply = await sendChat(s, system, this.messages);
+      const tools = editModeOf(s) === "off" ? undefined : new VaultTools(this.app, () => editModeOf(this.plugin.settings), (c) => this.askApproval(c, pending));
+      const system = `${s.systemPrompt}${tools ? EDIT_INSTRUCTIONS : ""}\n\nScope: ${ctx.label} (${ctx.files.length} note(s)${ctx.truncated ? ", truncated" : ""})\n\n<context>\n${ctx.text}</context>`;
+      let reply = await Promise.race([sendChat(s, system, this.messages, tools), stopPromise]);
+      if (tools && tools.modified.size) reply += `\n\n---\n_Modified: ${[...tools.modified].map((p) => `[[${p}]]`).join(", ")}_`;
       this.messages.push({ role: "assistant", content: reply });
       if (!this.convId) { this.convId = newId(); this.convCreated = Date.now(); }
       const conv: Conversation = {
-        id: this.convId, title: this.messages[0].content.slice(0, 80), scope: this.chatScope, scopeLabel: ctx.label,
+        id: this.convId, title: this.messages[0].content.slice(0, 80), scope: this.chatScope, folderPath: this.chatScope === "folder" ? this.chatFolder : undefined, scopeLabel: ctx.label,
         provider: s.provider, model: s.provider === "anthropic" ? s.anthropicModel : s.openaiModel,
         effort: s.effort,
         createdAt: this.convCreated, updatedAt: Date.now(), messages: [...this.messages],
@@ -185,11 +192,14 @@ export class ChatView extends ItemView {
       await MarkdownRenderer.render(this.app, reply, pending, "", this);
     } catch (e: any) {
       this.messages.pop();
-      pending.addClass("error");
-      pending.setText(e?.message ?? String(e));
+      if (stopped) { pending.setText("Stopped."); pending.addClass("sac-scope-info"); }
+      else { pending.addClass("error"); pending.setText(e?.message ?? String(e)); }
     } finally {
       this.busy = false;
-      sendBtn.disabled = false;
+      this.cancel = null;
+      sendBtn.setText("Send");
+      sendBtn.removeClass("mod-warning");
+      sendBtn.addClass("mod-cta");
       this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     }
   }

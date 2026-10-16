@@ -3,7 +3,7 @@ import { Scope } from "./types";
 
 export interface ScopeContext { label: string; files: TFile[]; text: string; truncated: boolean; }
 
-export async function buildContext(app: App, scope: Scope, includeSubfolders: boolean, maxChars: number): Promise<ScopeContext> {
+export async function buildContext(app: App, scope: Scope, includeSubfolders: boolean, maxChars: number, folderPath?: string): Promise<ScopeContext> {
   const active = app.workspace.getActiveFile();
   let files: TFile[] = [];
   let label = "";
@@ -13,7 +13,9 @@ export async function buildContext(app: App, scope: Scope, includeSubfolders: bo
     files = [active];
     label = `File: ${active.path}`;
   } else if (scope === "folder") {
-    const folder: TFolder | null = active?.parent ?? app.vault.getRoot();
+    const folder: TFolder | null = folderPath !== undefined
+      ? (app.vault.getFolderByPath?.(folderPath) ?? app.vault.getRoot())
+      : (active?.parent ?? app.vault.getRoot());
     const path = folder?.path ?? "/";
     files = app.vault.getMarkdownFiles().filter((f) => {
       const parent = f.parent?.path ?? "/";

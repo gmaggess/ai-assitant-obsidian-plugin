@@ -1,23 +1,17 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import type ScopedAIChatPlugin from "./main";
+import type AIWriterAssistantPlugin from "./main";
 import { fetchModels } from "./providers";
 import { DONATION_URL } from "./donation";
 import { AnthropicEffortMode, Effort, Provider, Scope } from "./types";
 
 export class SettingsTab extends PluginSettingTab {
-  constructor(app: App, private plugin: ScopedAIChatPlugin) { super(app, plugin); }
+  constructor(app: App, private plugin: AIWriterAssistantPlugin) { super(app, plugin); }
 
   display() {
     const { containerEl } = this;
     const s = this.plugin.settings;
     const save = () => this.plugin.saveSettings();
     containerEl.empty();
-
-    const coffee = containerEl.createDiv({ attr: { style: "display:flex;justify-content:space-between;align-items:center;padding:12px;margin-bottom:12px;border-radius:8px;background:var(--background-secondary)" } });
-    coffee.createSpan({ text: "Enjoying Scoped AI Chat? Support its development — opens Venmo in a new tab." });
-    const a = coffee.createEl("a", { text: "\u2615 Buy me a coffee on Venmo", href: DONATION_URL, cls: "mod-cta" });
-    a.setAttr("target", "_blank");
-    a.setAttr("style", "padding:6px 12px;border-radius:6px;background:var(--interactive-accent);color:var(--text-on-accent);text-decoration:none;font-weight:600");
 
     containerEl.createEl("h3", { text: "API keys" });
     new Setting(containerEl).setName("Anthropic API key").setDesc("console.anthropic.com → API keys")
@@ -26,7 +20,7 @@ export class SettingsTab extends PluginSettingTab {
       .addText((t) => { t.inputEl.type = "password"; t.setValue(s.openaiApiKey).onChange(async (v) => { s.openaiApiKey = v.trim(); await save(); }); });
 
     containerEl.createEl("h3", { text: "Model" });
-    new Setting(containerEl).setName("Default provider")
+    new Setting(containerEl).setName("Provider")
       .addDropdown((d) => d.addOptions({ anthropic: "Claude", openai: "ChatGPT" }).setValue(s.provider)
         .onChange(async (v) => { s.provider = v as Provider; await save(); }));
 
@@ -69,6 +63,18 @@ export class SettingsTab extends PluginSettingTab {
       .addToggle((t) => t.setValue(s.includeSubfolders).onChange(async (v) => { s.includeSubfolders = v; await save(); }));
     new Setting(containerEl).setName("Max context characters").setDesc("Notes beyond this limit are dropped (active note always first).")
       .addText((t) => t.setValue(String(s.maxContextChars)).onChange(async (v) => { const n = parseInt(v); if (n > 0) { s.maxContextChars = n; await save(); } }));
+    containerEl.createEl("h3", { text: "File editing" });
+    new Setting(containerEl).setName("Let the AI modify notes")
+      .setDesc("Allow the assistant to create and edit notes in your vault. Turn off for a read-only chat.")
+      .addToggle((t) => t.setValue(s.allowEdits).onChange(async (v) => { s.allowEdits = v; await save(); this.display(); }));
+    if (s.allowEdits) {
+      new Setting(containerEl).setName("Require approval for changes")
+        .setDesc("Show a preview and wait for Apply before anything is written. Turn off to apply changes immediately.")
+        .addToggle((t) => t.setValue(s.requireApproval).onChange(async (v) => { s.requireApproval = v; await save(); }));
+      new Setting(containerEl).setName("Max tool steps per request")
+        .setDesc("Safety cap on how many read/edit steps the AI can take before it must stop. Raise it for bulk edits.")
+        .addText((t) => t.setValue(String(s.maxToolRounds)).onChange(async (v) => { const n = parseInt(v); if (n > 0 && n <= 200) { s.maxToolRounds = n; await save(); } }));
+    }
     containerEl.createEl("h3", { text: "Conversation history" });
     new Setting(containerEl).setName("Save-as-note folder").setDesc("Where \"Save as note\" puts conversations in your vault.")
       .addText((t) => t.setPlaceholder("AI Chats").setValue(s.notesFolder).onChange(async (v) => { s.notesFolder = v; await save(); }));
@@ -80,5 +86,11 @@ export class SettingsTab extends PluginSettingTab {
       }));
     new Setting(containerEl).setName("System prompt")
       .addTextArea((t) => { t.inputEl.rows = 5; t.setValue(s.systemPrompt).onChange(async (v) => { s.systemPrompt = v; await save(); }); });
+
+    const support = containerEl.createDiv("sac-support");
+    support.createSpan({ text: "Enjoying AI-Writer Assistant? " });
+    const a = support.createEl("a", { text: "\u2615 Buy me a coffee", href: DONATION_URL });
+    a.setAttr("target", "_blank");
+    a.setAttr("rel", "noopener");
   }
 }

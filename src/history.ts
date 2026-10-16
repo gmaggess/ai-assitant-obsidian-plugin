@@ -1,10 +1,11 @@
-import type ScopedAIChatPlugin from "./main";
+import type AIWriterAssistantPlugin from "./main";
 import { ChatMessage, Scope } from "./types";
 
 export interface Conversation {
   id: string;
   title: string;
   scope: Scope;
+  folderPath?: string;
   scopeLabel: string;
   provider: string;
   model: string;
@@ -16,7 +17,7 @@ export interface Conversation {
 
 export class HistoryStore {
   private items: Conversation[] = [];
-  constructor(private plugin: ScopedAIChatPlugin) {}
+  constructor(private plugin: AIWriterAssistantPlugin) {}
 
   private get path() { return `${this.plugin.manifest.dir}/history.json`; }
 

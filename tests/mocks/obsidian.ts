@@ -44,3 +44,4 @@ export class Notice {
 }
 export class Component {}
 export const MarkdownRenderer = { render: async () => {} };
+export const normalizePath = (p: string) => p.replace(/\/+/g, "/").replace(/^\/|\/$/g, "");

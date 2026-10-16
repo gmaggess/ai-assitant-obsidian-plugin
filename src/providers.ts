@@ -1,6 +1,8 @@
 import { requestUrl } from "obsidian";
-import { ChatMessage, Effort, PluginSettings } from "./types";
+import { ChatMessage, Effort, PluginSettings, ToolHost } from "./types";
 
+// Models that rejected `thinking.type: enabled` this session; they get adaptive thinking up front.
+const ADAPTIVE_ONLY = new Set<string>();
 const THINKING_BUDGET: Record<Effort, number> = { low: 2048, medium: 6000, high: 16000, xhigh: 24000, max: 32000 };
 
 function errMsg(status: number, body: any): string {
@@ -8,63 +10,119 @@ function errMsg(status: number, body: any): string {
   return `API error ${status}: ${m}`;
 }
 
-export async function sendChat(s: PluginSettings, system: string, messages: ChatMessage[]): Promise<string> {
-  return s.provider === "anthropic" ? sendAnthropic(s, system, messages) : sendOpenAI(s, system, messages);
+export async function sendChat(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
+  return s.provider === "anthropic" ? sendAnthropic(s, system, messages, tools) : sendOpenAI(s, system, messages, tools);
 }
 
-async function sendAnthropic(s: PluginSettings, system: string, messages: ChatMessage[]): Promise<string> {
+async function sendAnthropic(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
   if (!s.anthropicApiKey) throw new Error("Add your Anthropic API key in plugin settings.");
-  const body: any = { model: s.anthropicModel, max_tokens: s.maxOutputTokens, system, messages };
-  if (s.anthropicEffortMode === "effort") {
+  const msgs: any[] = [...messages];
+  const body: any = { model: s.anthropicModel, max_tokens: s.maxOutputTokens, system, messages: msgs };
+  if (tools) body.tools = tools.defs.map((d) => ({ name: d.name, description: d.description, input_schema: d.schema }));
+  const useAdaptive = () => { body.thinking = { type: "adaptive" }; body.output_config = { effort: s.effort }; };
+  if (s.anthropicEffortMode === "thinking-budget" && ADAPTIVE_ONLY.has(s.anthropicModel)) {
+    useAdaptive();
+  } else if (s.anthropicEffortMode === "effort") {
     body.output_config = { effort: s.effort };
   } else if (s.anthropicEffortMode === "thinking-budget") {
     const budget = Math.min(THINKING_BUDGET[s.effort], Math.max(1024, s.maxOutputTokens - 1024));
     body.thinking = { type: "enabled", budget_tokens: budget };
     if (body.max_tokens <= budget) body.max_tokens = budget + 2048;
   }
-  const res = await requestUrl({
-    url: "https://api.anthropic.com/v1/messages",
-    method: "POST",
-    throw: false,
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": s.anthropicApiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify(body),
-  });
-  if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-  const data = res.json;
-  if (data.stop_reason === "refusal") return "_The model declined to answer this request._";
-  return (data.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+  const texts: string[] = [];
+  for (let round = 0; round < (s.maxToolRounds || 25); round++) {
+    const call = () => requestUrl({
+      url: "https://api.anthropic.com/v1/messages",
+      method: "POST",
+      throw: false,
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": s.anthropicApiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify(body),
+    });
+    let res = await call();
+    // Newer models reject manual thinking budgets: switch to adaptive thinking and remember it for this model.
+    if (res.status === 400 && body.thinking?.type === "enabled" && /thinking\.type\.enabled|adaptive/i.test(JSON.stringify(res.json))) {
+      ADAPTIVE_ONLY.add(s.anthropicModel);
+      useAdaptive();
+      res = await call();
+    }
+    if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
+    const data = res.json;
+    if (data.stop_reason === "refusal") return "_The model declined to answer this request._";
+    const content: any[] = data.content ?? [];
+    const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    if (text) texts.push(text);
+    const calls = content.filter((b) => b.type === "tool_use");
+    if (!tools || data.stop_reason !== "tool_use" || calls.length === 0) return texts.join("\n\n");
+    // Echo the assistant turn verbatim (keeps thinking blocks/signatures intact), then answer each tool call.
+    msgs.push({ role: "assistant", content });
+    const results: any[] = [];
+    for (const c of calls) {
+      let out: string;
+      try { out = await tools.run(c.name, c.input); } catch (e: any) { out = `Error: ${e?.message ?? e}`; }
+      results.push({ type: "tool_result", tool_use_id: c.id, content: out });
+    }
+    msgs.push({ role: "user", content: results });
+  }
+  texts.push("_(stopped after too many tool steps)_");
+  return texts.join("\n\n");
 }
 
-async function sendOpenAI(s: PluginSettings, system: string, messages: ChatMessage[]): Promise<string> {
+async function sendOpenAI(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
   if (!s.openaiApiKey) throw new Error("Add your OpenAI API key in plugin settings.");
   const effort = s.effort === "max" || s.effort === "xhigh" ? "high" : s.effort;
+  const input: any[] = messages.map((m) => ({ role: m.role, content: m.content }));
   const body: any = {
     model: s.openaiModel,
     instructions: system,
-    input: messages.map((m) => ({ role: m.role, content: m.content })),
+    input,
     max_output_tokens: s.maxOutputTokens,
     store: false,
     reasoning: { effort },
   };
-  let res = await post(s, body);
-  // Non-reasoning models reject the reasoning param: retry once without it.
-  if (res.status === 400 && /reasoning/i.test(JSON.stringify(res.json))) {
-    delete body.reasoning;
-    res = await post(s, body);
+  if (tools) {
+    body.tools = tools.defs.map((d) => ({ type: "function", name: d.name, description: d.description, parameters: d.schema }));
+    // Stateless (store: false) tool loops need reasoning items passed back, which requires encrypted content.
+    body.include = ["reasoning.encrypted_content"];
   }
-  if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
-  const data = res.json;
-  if (data.output_text) return data.output_text;
-  const out: string[] = [];
-  for (const item of data.output ?? []) {
-    if (item.type === "message") for (const c of item.content ?? []) if (c.type === "output_text") out.push(c.text);
+  const texts: string[] = [];
+  for (let round = 0; round < (s.maxToolRounds || 25); round++) {
+    let res = await post(s, body);
+    // Non-reasoning models reject the reasoning param: retry once without it.
+    if (res.status === 400 && /reasoning/i.test(JSON.stringify(res.json))) {
+      delete body.reasoning;
+      delete body.include;
+      res = await post(s, body);
+    }
+    if (res.status >= 400) throw new Error(errMsg(res.status, res.json));
+    const data = res.json;
+    const output: any[] = data.output ?? [];
+    const calls = output.filter((i) => i.type === "function_call");
+    if (!tools || calls.length === 0) {
+      const parts: string[] = [];
+      if (data.output_text) parts.push(data.output_text);
+      else for (const item of output) {
+        if (item.type === "message") for (const c of item.content ?? []) if (c.type === "output_text") parts.push(c.text);
+      }
+      if (parts.length) texts.push(parts.join("\n"));
+      return texts.join("\n\n") || "_(empty response — try raising Max output tokens)_";
+    }
+    for (const item of output) {
+      if (item.type === "message") for (const c of item.content ?? []) if (c.type === "output_text") texts.push(c.text);
+    }
+    input.push(...output);
+    for (const c of calls) {
+      let out: string;
+      try { out = await tools.run(c.name, JSON.parse(c.arguments || "{}")); } catch (e: any) { out = `Error: ${e?.message ?? e}`; }
+      input.push({ type: "function_call_output", call_id: c.call_id, output: out });
+    }
   }
-  return out.join("\n") || "_(empty response — try raising Max output tokens)_";
+  texts.push("_(stopped after too many tool steps)_");
+  return texts.join("\n\n");
 }
 
 function post(s: PluginSettings, body: any) {
