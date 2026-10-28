@@ -1,3 +1,4 @@
+/** The chat view: the panel the user types into and reads replies from. */
 import { App, FuzzySuggestModal, ItemView, MarkdownRenderer, Menu, TFolder, WorkspaceLeaf, Notice, setIcon, setTooltip } from "obsidian";
 import type AIWriterAssistantPlugin from "./main";
 import { buildContext } from "./context";
@@ -9,8 +10,10 @@ import { ChatMessage, Scope, editModeOf } from "./types";
 import { ChangeRequest, EDIT_INSTRUCTIONS, VaultTools } from "./tools";
 import { errorMessage } from "./data";
 
+/** Registered type of the chat ItemView. */
 export const VIEW_TYPE = "ai-writer-assistant-view";
 
+/** A modal that lets the user choose a folder for context. */
 class FolderPickerModal extends FuzzySuggestModal<TFolder> {
   constructor(app: App, private onPick: (folder: TFolder) => void) {
     super(app);
@@ -21,6 +24,7 @@ class FolderPickerModal extends FuzzySuggestModal<TFolder> {
   onChooseItem(f: TFolder) { this.onPick(f); }
 }
 
+/** The chat panel's ItemView: input, rendering, and the request loop. */
 export class ChatView extends ItemView {
   private messages: ChatMessage[] = [];
   private chatScope: Scope;
@@ -41,8 +45,10 @@ export class ChatView extends ItemView {
   getDisplayText() { return this.plugin.manifest.name; }
   getIcon() { return "message-square"; }
 
+  /** Render the panel and keep the scope info in sync with the active file. */
   async onOpen() { this.render(); this.registerEvent(this.app.workspace.on("file-open", () => this.updateScopeInfo())); }
 
+  /** Build the toolbar, message list, and the input row. */
   render() {
     const root = this.contentEl;
     root.empty();
@@ -81,6 +87,7 @@ export class ChatView extends ItemView {
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void submit(); } });
   }
 
+  /** Load a stored conversation into this view by id. */
   async loadConversation(id: string) {
     const c = this.plugin.history.get(id);
     if (!c) return;
@@ -96,6 +103,7 @@ export class ChatView extends ItemView {
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
+  /** Save the current conversation as a note, when there is one. */
   private async saveAsNote() {
     const c = this.convId ? this.plugin.history.get(this.convId) : undefined;
     if (!c || c.messages.length === 0) { new Notice("Nothing to save yet — send a message first."); return; }
@@ -106,6 +114,7 @@ export class ChatView extends ItemView {
     } catch (e) { new Notice(`Couldn't save note: ${errorMessage(e)}`); }
   }
 
+  /** Show a confirm/reject card for a proposed note change. */
   private askApproval(c: ChangeRequest, before: HTMLElement): Promise<boolean> {
     return new Promise((resolve) => {
       const card = this.messagesEl.createDiv("sac-change");
@@ -134,6 +143,7 @@ export class ChatView extends ItemView {
     });
   }
 
+  /** Open the context-scope picker menu at the click point. */
   private showScopeMenu(e: MouseEvent) {
     const menu = new Menu();
     const choose = (scope: Scope, title: string, icon: string, onPick: () => void) =>
@@ -146,6 +156,7 @@ export class ChatView extends ItemView {
     menu.showAtMouseEvent(e);
   }
 
+  /** Refresh the scope button label and active state. */
   private updateScopeInfo() {
     if (!this.scopeButton) return;
     const active = this.app.workspace.getActiveFile();
@@ -156,6 +167,7 @@ export class ChatView extends ItemView {
     setTooltip(this.scopeButton, `Context: ${this.chatScope} — ${t}`);
   }
 
+  /** Run one user turn: build context, call the provider, and persist. */
   private async ask(text: string, sendBtn: HTMLButtonElement) {
     this.busy = true;
     sendBtn.setText("Stop");

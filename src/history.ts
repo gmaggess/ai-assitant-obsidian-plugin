@@ -1,7 +1,9 @@
+/** On-disk store of past conversations with load, upsert, and remove. */
 import type AIWriterAssistantPlugin from "./main";
 import { ChatMessage, Scope } from "./types";
 import { arrayOf, isRecord, parseJson } from "./data";
 
+/** A stored conversation: its metadata and ordered chat messages. */
 export interface Conversation {
   id: string;
   title: string;
@@ -16,6 +18,7 @@ export interface Conversation {
   messages: ChatMessage[];
 }
 
+/** Validate that a parsed record matches the stored Conversation shape. */
 function isConversation(value: unknown): value is Conversation {
   if (!isRecord(value)) return false;
   return [value.id, value.title, value.scopeLabel, value.provider, value.model].every((v) => typeof v === "string")
@@ -28,28 +31,36 @@ function isConversation(value: unknown): value is Conversation {
       && (m.role === "user" || m.role === "assistant") && typeof m.content === "string");
 }
 
+/** In-memory plus on-disk store of conversations, kept newest-first. */
 export class HistoryStore {
   private items: Conversation[] = [];
   constructor(private plugin: AIWriterAssistantPlugin) {}
 
   private get path() { return `${this.plugin.manifest.dir}/history.json`; }
 
+  /** Load from history.json, tolerating a corrupt or missing file. */
   async load() {
     const a = this.plugin.app.vault.adapter;
     try { if (await a.exists(this.path)) this.items = arrayOf(parseJson(await a.read(this.path))).filter(isConversation); } catch { this.items = []; }
   }
   private async persist() { await this.plugin.app.vault.adapter.write(this.path, JSON.stringify(this.items)); }
 
+  /** All conversations, most-recent activity first. */
   all() { return [...this.items].sort((a, b) => b.updatedAt - a.updatedAt); }
+  /** Look up a conversation by id. */
   get(id: string) { return this.items.find((c) => c.id === id); }
 
+  /** Insert or replace a conversation by id and persist the store. */
   async upsert(c: Conversation) {
     const i = this.items.findIndex((x) => x.id === c.id);
     if (i >= 0) this.items[i] = c; else this.items.push(c);
     await this.persist();
   }
+  /** Delete a conversation by id and persist the store. */
   async remove(id: string) { this.items = this.items.filter((c) => c.id !== id); await this.persist(); }
+  /** Delete all conversations and persist the store. */
   async clear() { this.items = []; await this.persist(); }
 }
 
+/** Generate a short unique id for a new conversation. */
 export function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }

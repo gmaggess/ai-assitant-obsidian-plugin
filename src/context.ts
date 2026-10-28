@@ -1,8 +1,11 @@
+/** Build the note context (files plus their text) for a chat request. */
 import { App, TFile, TFolder } from "obsidian";
 import { Scope } from "./types";
 
+/** The resolved context: which files, their joined text, and truncation. */
 export interface ScopeContext { label: string; files: TFile[]; text: string; truncated: boolean; }
 
+/** Resolve the active scope into a capped set of notes and their text. */
 export async function buildContext(app: App, scope: Scope, includeSubfolders: boolean, maxChars: number, folderPath?: string): Promise<ScopeContext> {
   const active = app.workspace.getActiveFile();
   let files: TFile[] = [];

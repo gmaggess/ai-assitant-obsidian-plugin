@@ -1,3 +1,4 @@
+/** Register the chat view, settings tab, commands, and history store. */
 import { Plugin, WorkspaceLeaf } from "obsidian";
 import { ChatView, VIEW_TYPE } from "./view";
 import { SettingsTab } from "./settings";
@@ -5,10 +6,12 @@ import { HistoryStore } from "./history";
 import { SearchModal } from "./search";
 import { loadSettings, PluginSettings } from "./types";
 
+/** The Obsidian plugin: wires view, settings, history, and commands together. */
 export default class AIWriterAssistantPlugin extends Plugin {
   settings!: PluginSettings;
   history!: HistoryStore;
 
+  /** Load settings and history, then register the view, tab, and commands. */
   async onload() {
     this.settings = loadSettings(await this.loadData());
     this.history = new HistoryStore(this);
@@ -20,6 +23,7 @@ export default class AIWriterAssistantPlugin extends Plugin {
     this.addSettingTab(new SettingsTab(this.app, this));
   }
 
+  /** Reveal, or open, the chat panel, reusing an existing leaf when present. */
   async activateView() {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
     const leaf = existing ?? this.app.workspace.getRightLeaf(false);
@@ -28,6 +32,7 @@ export default class AIWriterAssistantPlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
   }
 
+  /** Open the panel and resume a stored conversation by id. */
   async openConversation(id: string) {
     await this.activateView();
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
@@ -35,5 +40,6 @@ export default class AIWriterAssistantPlugin extends Plugin {
     if (view instanceof ChatView) await view.loadConversation(id);
   }
 
+  /** Persist the current settings to disk. */
   async saveSettings() { await this.saveData(this.settings); }
 }

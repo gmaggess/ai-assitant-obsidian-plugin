@@ -1,20 +1,25 @@
+/** Semantic search over stored conversations, presented in a modal picker. */
 import { App, MarkdownRenderer, Modal, Notice, Component } from "obsidian";
+/** Search past conversations via the model and show results in a modal. */
 import type AIWriterAssistantPlugin from "./main";
 import { Conversation } from "./history";
 import { sendChat } from "./providers";
 import { errorMessage, parseJson, recordOf, recordsOf } from "./data";
 
+/** A model answer: a prose summary plus per-conversation relevance. */
 interface SearchResult { summary: string; matches: { id: string; reason: string }[]; }
 
 const PER_CHAT_CHARS = 2500;
 const MAX_CANDIDATES = 200;
 
+/** Render a conversation to the compact XML the model searches over. */
 function digest(c: Conversation): string {
   let body = c.messages.map((m) => `${m.role === "user" ? "Q" : "A"}: ${m.content}`).join("\n");
   if (body.length > PER_CHAT_CHARS) body = body.slice(0, PER_CHAT_CHARS) + " …";
   return `<chat id="${c.id}" date="${new Date(c.updatedAt).toISOString().slice(0, 10)}" scope="${c.scopeLabel}">\n${body}\n</chat>`;
 }
 
+/** Extract the JSON result from model text, validating ids against a whitelist. */
 function parseResult(text: string, valid: Set<string>): SearchResult {
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("The model didn't return a readable result. Try again.");
@@ -27,6 +32,7 @@ function parseResult(text: string, valid: Set<string>): SearchResult {
   };
 }
 
+/** Ask the model which stored conversations relate to a query. */
 export async function searchHistory(plugin: AIWriterAssistantPlugin, query: string): Promise<SearchResult> {
   const chats = plugin.history.all().slice(0, MAX_CANDIDATES);
   if (!chats.length) return { summary: "You don't have any saved conversations yet.", matches: [] };
@@ -42,6 +48,7 @@ export async function searchHistory(plugin: AIWriterAssistantPlugin, query: stri
   return parseResult(text, new Set(chats.map((c) => c.id)));
 }
 
+/** A search modal with an empty-query guard and a results list. */
 export class SearchModal extends Modal {
   private comp = new Component();
   constructor(app: App, private plugin: AIWriterAssistantPlugin) { super(app); }

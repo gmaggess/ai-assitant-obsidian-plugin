@@ -1,3 +1,4 @@
+/** Anthropic and OpenAI chat-completion adapters with an optional tool loop. */
 import { requestUrl } from "obsidian";
 import { ChatMessage, Effort, PluginSettings, ToolHost } from "./types";
 import { errorMessage, parseJson, recordOf, recordsOf, toolString } from "./data";
@@ -6,16 +7,19 @@ import { errorMessage, parseJson, recordOf, recordsOf, toolString } from "./data
 const ADAPTIVE_ONLY = new Set<string>();
 const THINKING_BUDGET: Record<Effort, number> = { low: 2048, medium: 6000, high: 16000, xhigh: 24000, max: 32000 };
 
+/** Format a failed API response into a human-readable message. */
 function errMsg(status: number, body: unknown): string {
   const data = recordOf(body);
   const m = recordOf(data.error).message ?? data.message ?? JSON.stringify(body);
   return `API error ${status}: ${typeof m === "string" ? m : JSON.stringify(m)}`;
 }
 
+/** Dispatch a chat to the configured provider, running any tool loop first. */
 export async function sendChat(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
   return s.provider === "anthropic" ? sendAnthropic(s, system, messages, tools) : sendOpenAI(s, system, messages, tools);
 }
 
+/** Call the Anthropic Messages API, including an optional multi-round tool loop. */
 async function sendAnthropic(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
   if (!s.anthropicApiKey) throw new Error("Add your Anthropic API key in plugin settings.");
   const msgs: unknown[] = [...messages];
@@ -81,6 +85,7 @@ async function sendAnthropic(s: PluginSettings, system: string, messages: ChatMe
   return texts.join("\n\n");
 }
 
+/** Call the OpenAI Responses API, including an optional multi-round tool loop. */
 async function sendOpenAI(s: PluginSettings, system: string, messages: ChatMessage[], tools?: ToolHost): Promise<string> {
   if (!s.openaiApiKey) throw new Error("Add your OpenAI API key in plugin settings.");
   const effort = s.effort === "max" || s.effort === "xhigh" ? "high" : s.effort;
@@ -136,6 +141,7 @@ async function sendOpenAI(s: PluginSettings, system: string, messages: ChatMessa
   return texts.join("\n\n");
 }
 
+/** POST a JSON request to the OpenAI Responses endpoint. */
 function post(s: PluginSettings, body: Record<string, unknown>) {
   return requestUrl({
     url: "https://api.openai.com/v1/responses",
@@ -146,6 +152,7 @@ function post(s: PluginSettings, body: Record<string, unknown>) {
   });
 }
 
+/** Fetch the model ids a provider offers, or [] when the request fails. */
 export async function fetchModels(s: PluginSettings, provider: "anthropic" | "openai"): Promise<string[]> {
   if (provider === "anthropic") {
     const res = await requestUrl({

@@ -1,9 +1,13 @@
+/** Render a stored conversation to markdown and save it as a note. */
 import { App, normalizePath, TFile } from "obsidian";
 import type { Conversation } from "./history";
 
+// Map a provider id to its display name for front matter and callouts.
 const providerName = (p: string) => (p === "anthropic" ? "Claude" : p === "openai" ? "ChatGPT" : p);
+// Quote a value for inclusion in YAML front matter.
 const yaml = (v: string) => JSON.stringify(v);
 
+/** Render a conversation to a markdown string with front matter and details. */
 export function conversationToMarkdown(c: Conversation): string {
   const fm = [
     "---",
@@ -31,6 +35,7 @@ export function conversationToMarkdown(c: Conversation): string {
   return `${fm}\n\n# ${c.title}\n\n${details}\n\n${body}\n`;
 }
 
+/** Save a conversation as a uniquely named note under folder. */
 export async function saveConversationNote(app: App, c: Conversation, folder: string): Promise<TFile> {
   const dir = normalizePath(folder.trim() || "AI Chats");
   if (!app.vault.getAbstractFileByPath(dir)) await app.vault.createFolder(dir);

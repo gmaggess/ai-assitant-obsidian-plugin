@@ -1,3 +1,4 @@
+/** The settings tab: a version-conditional renderer for a single settings schema. */
 import { App, Notice, PluginSettingTab, requireApiVersion, Setting } from "obsidian";
 import type AIWriterAssistantPlugin from "./main";
 import { fetchModels } from "./providers";
@@ -5,18 +6,21 @@ import { DONATION_URL } from "./donation";
 import { AnthropicEffortMode, Effort, Provider, Scope } from "./types";
 import { errorMessage } from "./data";
 
+/** A single settings row: label, optional description, and a control builder. */
 interface SettingsRow {
   name: string;
   desc?: string;
   visible?: () => boolean;
   render: (setting: Setting) => void | (() => void);
 }
+/** A labeled group of settings rows rendered as one sub-panel. */
 interface SettingsSection { type: "group"; heading: string; items: SettingsRow[]; }
 
 export class SettingsTab extends PluginSettingTab {
   private legacyCleanups: (() => void)[] = [];
   constructor(app: App, private plugin: AIWriterAssistantPlugin) { super(app, plugin); }
 
+  /** Build the full, sectioned settings schema used by both renderers. */
   getSettingDefinitions(): SettingsSection[] {
     const s = this.plugin.settings;
     const save = () => this.plugin.saveSettings();
@@ -119,11 +123,13 @@ export class SettingsTab extends PluginSettingTab {
   /** Compatibility renderer for Obsidian versions before 1.13.0. */
   display() { this.renderLegacy(); }
 
+  /** Render the tab once, falling back to the legacy layout on old Obsidian. */
   private refreshSettings() {
     if (requireApiVersion("1.13.0")) this.update();
     else this.renderLegacy();
   }
 
+  /** Legacy renderer: one container per section, with a heading per title. */
   private renderLegacy() {
     this.cleanLegacy();
     this.containerEl.empty();

@@ -1,15 +1,24 @@
+/** Shared domain types plus the settings model and its loader. */
 export type Provider = "anthropic" | "openai";
+/** Which notes are available to the model as context. */
 export type Scope = "file" | "folder" | "vault";
+/** OpenAI reasoning effort level. */
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+/** Anthropic thinking-effort mode setting. */
 export type AnthropicEffortMode = "effort" | "thinking-budget" | "none";
 
+/** How edits are applied: confirm each, apply automatically, or disable. */
 export type EditMode = "ask" | "auto" | "off";
 
+/** A tool the model may call, matching the providers' tool schema. */
 export interface ToolDef { name: string; description: string; schema: Record<string, unknown>; }
+/** Executes a single tool call and returns its result text. */
 export interface ToolHost { defs: ToolDef[]; run(name: string, input: unknown): Promise<string>; }
 
+/** A single message within a conversation. */
 export interface ChatMessage { role: "user" | "assistant"; content: string; }
 
+/** Every persisted plugin setting. */
 export interface PluginSettings {
   anthropicApiKey: string;
   openaiApiKey: string;
@@ -31,6 +40,7 @@ export interface PluginSettings {
   maxToolRounds: number;
 }
 
+/** Default settings applied on first run. */
 export const DEFAULT_SETTINGS: PluginSettings = {
   anthropicApiKey: "",
   openaiApiKey: "",
@@ -53,12 +63,14 @@ export const DEFAULT_SETTINGS: PluginSettings = {
     "You are a helpful assistant inside the user's Obsidian vault. Answer ONLY using the notes provided in the context. If the answer is not in the provided notes, say so. Cite note paths when relevant.",
 };
 
+/** Translate the two edit flags into a single edit mode. */
 export function editModeOf(s: Pick<PluginSettings, "allowEdits" | "requireApproval">): EditMode {
   return !s.allowEdits ? "off" : s.requireApproval ? "ask" : "auto";
 }
 import { arrayOf, recordOf } from "./data";
 
 
+/** Validate and coerce stored data into complete, typed settings. */
 export function loadSettings(value: unknown): PluginSettings {
   const raw = recordOf(value);
   const defaults = DEFAULT_SETTINGS;

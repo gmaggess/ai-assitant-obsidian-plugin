@@ -1,12 +1,15 @@
+/** Tools the model uses to read and edit notes, plus a path safety check. */
 import { App, TFile, normalizePath } from "obsidian";
 import { EditMode, ToolDef, ToolHost } from "./types";
 import { recordOf } from "./data";
 
+/** A pending note change the model requested: edit, append, or create. */
 export type ChangeRequest =
   | { kind: "create"; path: string; content: string }
   | { kind: "append"; path: string; content: string }
   | { kind: "edit"; path: string; oldText: string; newText: string };
 
+/** The tool schemas advertised to the model. */
 export const TOOL_DEFS: ToolDef[] = [
   {
     name: "read_note",
@@ -34,6 +37,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
 ];
 
+/** Instructions prepended to the system prompt when editing is allowed. */
 export const EDIT_INSTRUCTIONS =
   "\n\nYou can read and modify notes in the vault with the provided tools. Only change notes when the user asks you to. " +
   "Prefer edit_note with a small, unique old_text over rewriting whole notes. Paths are vault-relative. " +
@@ -58,12 +62,14 @@ export function checkPath(path: unknown, configDir: string): string | null {
   return null;
 }
 
+/** Execute a tool call by name, guarding paths and confirming edits. */
 export class VaultTools implements ToolHost {
   defs = TOOL_DEFS;
   modified = new Set<string>();
 
   constructor(private app: App, private mode: () => EditMode, private confirm: (c: ChangeRequest) => Promise<boolean>) {}
 
+  /** Dispatch one tool call after validating its input. */
   async run(name: string, value: unknown): Promise<string> {
     const input = recordOf(value);
     const bad = checkPath(input.path, this.app.vault.configDir);
